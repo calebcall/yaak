@@ -1,0 +1,24 @@
+{
+  "name": "@calebcall/action-python-requests",
+  "displayName": "Copy as Python",
+  "description": "Copy request as python using requests library",
+  "private": true,
+  "version": "0.0.1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/calebcall/yaak.git",
+    "directory": "plugins/action-python-requests"
+  },
+  "scripts": {
+    "build": "yaakcli build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.9",
+    "@yaakapp/cli": "^0.3.1",
+    "typescript": "^5.5.2",
+    "vitest": "^3.0.5"
+  },
+  "dependencies": {
+    "@yaakapp/api": "^0.5.3"
+  }
+}
