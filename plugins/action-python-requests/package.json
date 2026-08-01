@@ -10,7 +10,10 @@
     "directory": "plugins/action-python-requests"
   },
   "scripts": {
-    "build": "yaakcli build"
+    "build": "yaakcli build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
     "@types/node": "^20.14.9",
