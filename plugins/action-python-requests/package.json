@@ -3,7 +3,7 @@
   "displayName": "Copy as Python",
   "description": "Copy request as python using requests library",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.1.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/calebcall/yaak.git",

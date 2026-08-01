@@ -8,27 +8,19 @@ export const plugin: PluginDefinition = {
             async onSelect(ctx, args) {
                 const rendered = await ctx.httpRequest.render({
                     httpRequest: args.httpRequest,
-                    purpose: "preview",
+                    purpose: "send",
                 });
 
                 const method = (rendered.method || "GET").toUpperCase();
                 const url = rendered.url || "";
 
-                // Prefer original request headers; if none present, fall back to rendered headers
-                const headerSource = (args.httpRequest.headers && args.httpRequest.headers.length > 0)
-                    ? args.httpRequest.headers
-                    : (rendered.headers || []);
-                const enabledHeaders = headerSource.filter(h => h.enabled !== false && h.name);
+                const enabledHeaders = (rendered.headers || []).filter(h => h.enabled !== false && h.name);
                 const headersObj: Record<string, string> = {};
                 for (const h of enabledHeaders) {
                     headersObj[h.name] = h.value ?? "";
                 }
 
-                // Prefer original request URL params; if none present, fall back to rendered params
-                const paramsSource = (args.httpRequest.urlParameters && args.httpRequest.urlParameters.length > 0)
-                    ? args.httpRequest.urlParameters
-                    : (rendered.urlParameters || []);
-                const enabledParams = paramsSource.filter(p => p.enabled !== false && p.name);
+                const enabledParams = (rendered.urlParameters || []).filter(p => p.enabled !== false && p.name);
                 const paramsObj: Record<string, string> = {};
                 for (const p of enabledParams) {
                     paramsObj[p.name] = p.value ?? "";
@@ -62,6 +54,7 @@ export const plugin: PluginDefinition = {
                 const auth = rendered.authentication ?? args.httpRequest.authentication ?? {} as Record<string, any>;
                 const authDisabled = auth?.disabled === true;
                 let needsDigestImport = false;
+                let needsNtlmImport = false;
                 let authCall: string | null = null;
                 if (!authDisabled) {
                     if (authType === "basic") {
@@ -78,6 +71,23 @@ export const plugin: PluginDefinition = {
                         if (value) headersObj["Authorization"] = value;
                     } else if (authType === "auth-aws-sig-v4") {
                         if (auth?.sessionToken) headersObj["X-Amz-Security-Token"] = auth.sessionToken;
+                    } else if (authType === "apikey") {
+                        const key = auth?.key ?? "";
+                        const value = String(auth?.value ?? "");
+                        if (key) {
+                            if (auth?.location === "query") {
+                                paramsObj[key] = value;
+                            } else {
+                                headersObj[key] = value;
+                            }
+                        }
+                    } else if (authType === "windows") {
+                        const domain = auth?.domain ?? "";
+                        const username = auth?.username ?? "";
+                        const password = auth?.password ?? "";
+                        const ntlmUser = domain ? `${domain}\\${username}` : username;
+                        needsNtlmImport = true;
+                        authCall = `HttpNtlmAuth(${pyString(ntlmUser)}, ${pyString(password)})`;
                     }
                 }
 
@@ -156,6 +166,9 @@ export const plugin: PluginDefinition = {
                 lines.push("import requests");
                 if (needsDigestImport) {
                     lines.push("from requests.auth import HTTPDigestAuth");
+                }
+                if (needsNtlmImport) {
+                    lines.push("from requests_ntlm import HttpNtlmAuth");
                 }
                 lines.push("");
                 lines.push(`url = ${pyString(url)}`);
