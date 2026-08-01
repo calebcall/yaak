@@ -65,6 +65,10 @@ describe("plugin definition", () => {
         expect(action.label).toBe("Copy as Python");
         expect(typeof action.onSelect).toBe("function");
     });
+
+    it("uses the copy icon rather than the generic info icon", () => {
+        expect(action.icon).toBe("copy");
+    });
 });
 
 describe("Copy as Python action", () => {

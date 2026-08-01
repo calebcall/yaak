@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "apiTypes": [
+    "httpRequestActions"
+  ],
+  "apis": {
+    "httpRequestActions": {
+      "label": "HTTP Request Action",
+      "source": "httpRequestActions",
+      "count": 1,
+      "items": [
+        {
+          "label": "Copy as Python",
+          "icon": "copy"
+        }
+      ]
+    }
+  }
+}

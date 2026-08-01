@@ -5,7 +5,7 @@ export const plugin: PluginDefinition = {
     httpRequestActions: [
         {
             label: "Copy as Python",
-            icon: "info",
+            icon: "copy",
             async onSelect(ctx, args) {
                 const rendered = await ctx.httpRequest.render({
                     httpRequest: args.httpRequest,
