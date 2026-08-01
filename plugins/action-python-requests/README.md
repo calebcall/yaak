@@ -40,7 +40,7 @@ import requests
 url = 'https://api.example.com/users'
 
 response = requests.get(url)
-print(response.json())
+print(response.text)
 ```
 
 ### POST Request with JSON Data
@@ -53,7 +53,31 @@ headers = {'Content-Type': 'application/json'}
 payload = {'name': 'John Doe', 'email': 'john@example.com'}
 
 response = requests.post(url, headers=headers, json=payload)
-print(response.json())
+print(response.text)
+```
+
+### Repeated Query Parameters
+
+```python
+import requests
+
+url = 'https://api.example.com/users'
+params = [('tag', 'urgent'), ('tag', 'billing')]
+
+response = requests.get(url, params=params)
+print(response.text)
+```
+
+### GraphQL Request
+
+```python
+import requests
+
+url = 'https://api.example.com/graphql'
+payload = {'query': 'query GetUser($id: ID!) {\n  user(id: $id) {\n    name\n  }\n}', 'variables': {'id': '42'}}
+
+response = requests.post(url, json=payload)
+print(response.text)
 ```
 
 ### Request with Multi-part Form Data
@@ -61,13 +85,12 @@ print(response.json())
 ```python
 import requests
 
-url = 'yaak.app'
-headers = {}
+url = 'https://api.example.com/upload'
 payload = {'hello': 'world'}
 files = { 'file': ('file.json', open('/path/to/file.json', 'rb')) }
 
 response = requests.post(url, files=files, data=payload)
-print(response.json())
+print(response.text)
 ```
 
 ### Request with Authentication
@@ -78,5 +101,28 @@ import requests
 url = 'https://api.example.com/protected'
 
 response = requests.get(url, auth=('username', 'password'))
-print(response.json())
+print(response.text)
 ```
+
+### Non-standard HTTP Method
+
+```python
+import requests
+
+url = 'https://api.example.com/cache/users'
+
+response = requests.request('PURGE', url)
+print(response.text)
+```
+
+## Development
+
+```bash
+npm install
+npm run typecheck   # type-check src/
+npm test            # run the vitest suite
+npm run build       # bundle to build/index.js
+```
+
+Tests assert on the generated source and, where a Python interpreter is
+available, parse each snippet with Python itself to guarantee it is valid.
