@@ -5,6 +5,15 @@ export type Dec = {neg: boolean; digits: bigint; scale: number};
 
 const DEC_PATTERN = /^([+-])?(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/;
 
+/**
+ * Bounds the exponent accepted by `parseDec`. `10n ** BigInt(exponent)` is computed
+ * eagerly to normalise the value, so an unbounded exponent (e.g. a hostile response
+ * body) could force an astronomically large BigInt allocation. 10,000 comfortably
+ * covers real-world magnitudes (1e18 wei, ~1e77 for a 256-bit integer) while keeping
+ * that allocation cheap.
+ */
+const MAX_EXPONENT = 10_000;
+
 export function parseDec(input: unknown): Dec {
     if (typeof input === "bigint") {
         return {neg: input < 0n, digits: input < 0n ? -input : input, scale: 0};
@@ -17,6 +26,9 @@ export function parseDec(input: unknown): Dec {
 
     const frac = m[3] ?? "";
     const exponent = m[4] != null ? Number.parseInt(m[4], 10) : 0;
+    if (!Number.isFinite(exponent) || Math.abs(exponent) > MAX_EXPONENT) {
+        throw new StepError(`exponent out of range: ${m[4]}`);
+    }
     let digits = BigInt((m[2] ?? "0") + frac);
     let scale = frac.length - exponent;
     if (scale < 0) {
@@ -40,6 +52,9 @@ export function divDec(a: Dec, b: Dec, precision = 30): Dec {
 }
 
 export function roundDec(d: Dec, places: number): Dec {
+    if (!Number.isInteger(places) || places < 0) {
+        throw new StepError(`places must be a non-negative integer: ${places}`);
+    }
     if (places >= d.scale) {
         return {...d, digits: d.digits * 10n ** BigInt(places - d.scale), scale: places};
     }

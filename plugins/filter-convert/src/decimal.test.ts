@@ -1,5 +1,6 @@
 import {describe, expect, it} from "vitest";
 import {divDec, formatDec, formatFixed, mulDec, parseDec, roundDec} from "./decimal";
+import {StepError} from "./errors";
 
 const d = (s: string) => parseDec(s);
 
@@ -14,6 +15,22 @@ describe("parseDec", () => {
 
     it("rejects non-numeric input", () => {
         expect(() => d("abc")).toThrow();
+    });
+
+    it("still accepts a large-but-reasonable exponent", () => {
+        expect(formatDec(d("1e18"))).toBe("1000000000000000000");
+    });
+
+    it("rejects a degenerate exponent that overflows to Infinity", () => {
+        expect(() => d("1e" + "9".repeat(400))).toThrow(StepError);
+    });
+
+    it("rejects a large-but-finite exponent beyond the bound", () => {
+        expect(() => d("1e10001")).toThrow(StepError);
+    });
+
+    it("accepts an exponent at the bound", () => {
+        expect(() => d("1e10000")).not.toThrow();
     });
 });
 
@@ -50,5 +67,13 @@ describe("roundDec and formatFixed", () => {
 
     it("keeps negatives correct", () => {
         expect(formatFixed(roundDec(d("-1.005"), 2), 2)).toBe("-1.01");
+    });
+
+    it("rejects negative places", () => {
+        expect(() => roundDec(d("1.2345"), -1)).toThrow(StepError);
+    });
+
+    it("rejects non-integer places", () => {
+        expect(() => roundDec(d("1.2345"), 1.5)).toThrow(StepError);
     });
 });
