@@ -2064,6 +2064,151 @@ function serialise(value) {
 }
 
 //#endregion
+//#region src/conversionTypes.ts
+/**
+* Steps that take a numeric argument rather than converting between two
+* representations. These are surfaced in the Simple form as the Then/Amount
+* controls, never as a From or To option.
+*/
+const NON_CONVERSION_STEPS = new Set([
+	"div",
+	"mul",
+	"fixed"
+]);
+/**
+* Bare-named steps (no `>` in the name) that decode FROM the labelled
+* encoding INTO text. Their own step name doubles as the token looked up in
+* TOKEN_LABELS below, so the label is never hand-duplicated here.
+*/
+const DECODE_ALIAS_STEPS = new Set([
+	"base64",
+	"base64url",
+	"hexbytes",
+	"urlenc"
+]);
+/**
+* Structured steps whose name gives no hint at all about its from/to shape
+* (unlike e.g. `hex>dec`, there is no token to derive a label from), so the
+* pair is spelled out explicitly. This is the minimum irreducible knowledge
+* needed for these two steps -- everything else in this module is derived
+* from `STEPS`'s own keys.
+*/
+const STRUCTURED_EDGES = {
+	json: {
+		from: "JSON string",
+		to: "value"
+	},
+	jwt: {
+		from: "JWT",
+		to: "claims"
+	}
+};
+/**
+* Human-readable labels for every token that appears on either side of an
+* `a>b`-named step, plus the decode-alias step names themselves (looked up
+* by their own name, since those steps have no `>`). `ms` and `epoch_ms`
+* deliberately share a label: both denote "a number of milliseconds", one as
+* a timestamp (`epoch_ms>date`) and one as a plain duration count
+* (`ms>duration`).
+*/
+const TOKEN_LABELS = {
+	hex: "hex",
+	dec: "decimal",
+	bin: "binary",
+	oct: "octal",
+	epoch_s: "epoch seconds",
+	epoch_ms: "epoch millis",
+	ms: "epoch millis",
+	date: "ISO date",
+	duration: "duration",
+	text: "text",
+	base64: "base64",
+	base64url: "base64url",
+	hexbytes: "hex bytes",
+	urlenc: "URL-encoded"
+};
+/**
+* Derives every from->to conversion edge straight from `STEPS`'s own keys,
+* so the Simple-mode form can never silently drop a step as the registry
+* grows: a step this module doesn't know how to label throws immediately at
+* import time (surfaced by a test, not a silently-missing dropdown entry).
+*/
+function deriveEdges() {
+	const edges = [];
+	for (const step of Object.keys(STEPS)) {
+		if (NON_CONVERSION_STEPS.has(step)) continue;
+		const structured = STRUCTURED_EDGES[step];
+		if (structured != null) {
+			edges.push({
+				step,
+				from: structured.from,
+				to: structured.to
+			});
+			continue;
+		}
+		if (DECODE_ALIAS_STEPS.has(step)) {
+			const label = TOKEN_LABELS[step];
+			if (label == null) throw new Error(`filter-convert: no label for decode-alias step "${step}"`);
+			edges.push({
+				step,
+				from: label,
+				to: "text"
+			});
+			continue;
+		}
+		const arrow = step.indexOf(">");
+		if (arrow === -1) throw new Error(`filter-convert: step "${step}" has no known from/to mapping for the Simple form`);
+		const fromToken = step.slice(0, arrow);
+		const toToken = step.slice(arrow + 1);
+		const from = TOKEN_LABELS[fromToken];
+		const to = TOKEN_LABELS[toToken];
+		if (from == null || to == null) {
+			const badToken = from == null ? fromToken : toToken;
+			throw new Error(`filter-convert: no label for token "${badToken}" in step "${step}"`);
+		}
+		edges.push({
+			step,
+			from,
+			to
+		});
+	}
+	return edges;
+}
+/** Every from->to conversion edge, derived from the registry -- never hand-maintained. */
+const CONVERSION_EDGES = deriveEdges();
+/** From options for the Simple-mode select, in registry-discovery order, deduplicated. */
+const FROM_OPTIONS = (() => {
+	const seen = /* @__PURE__ */ new Set();
+	const options = [];
+	for (const edge of CONVERSION_EDGES) {
+		if (seen.has(edge.from)) continue;
+		seen.add(edge.from);
+		options.push({
+			label: edge.from,
+			value: edge.from
+		});
+	}
+	return options;
+})();
+/** To options for a given From label. The option's `value` is the step name
+* itself, so picking a To option fully determines which step to run --
+* there is no separate from+to -> step lookup to keep in sync. */
+function toOptionsFor(from) {
+	return CONVERSION_EDGES.filter((e) => e.from === from).map((e) => ({
+		label: e.to,
+		value: e.step
+	}));
+}
+const firstFrom = FROM_OPTIONS[0];
+if (firstFrom == null) throw new Error("filter-convert: no conversion steps registered");
+/** The Simple form's default From, matching the plugin's historical default rule. */
+const DEFAULT_FROM = firstFrom.value;
+const firstTo = toOptionsFor(DEFAULT_FROM)[0];
+if (firstTo == null) throw new Error(`filter-convert: no To options for default From "${DEFAULT_FROM}"`);
+/** The Simple form's default To (a step name), matching the plugin's historical default rule. */
+const DEFAULT_TO_STEP = firstTo.value;
+
+//#endregion
 //#region src/dsl.ts
 /**
 * Split a rule line on `|` characters that sit outside brackets, parentheses
@@ -2183,6 +2328,46 @@ function parseStep(text, line) {
 const BOM = /^\uFEFF/;
 const storeKey = (requestId) => `rules:${requestId}`;
 const PLACEHOLDER = ["$.result | hex>dec", "$..value | hex>dec | div 1e18"].join("\n");
+const DEFAULT_STATE = {
+	mode: "simple",
+	field: "$.result",
+	from: DEFAULT_FROM,
+	to: DEFAULT_TO_STEP,
+	then: "none",
+	amount: "",
+	rules: ""
+};
+const MODE_OPTIONS = [{
+	label: "Simple",
+	value: "simple"
+}, {
+	label: "Advanced",
+	value: "advanced"
+}];
+const THEN_OPTIONS = [
+	{
+		label: "none",
+		value: "none"
+	},
+	{
+		label: "divide by",
+		value: "div"
+	},
+	{
+		label: "multiply by",
+		value: "mul"
+	},
+	{
+		label: "round to N places",
+		value: "fixed"
+	}
+];
+function isThenOp(value) {
+	return value === "none" || value === "div" || value === "mul" || value === "fixed";
+}
+function isValidFrom(value) {
+	return typeof value === "string" && FROM_OPTIONS.some((o) => o.value === value);
+}
 /**
 * Groups every step actually registered in `STEPS` into families for the
 * reference card shown above the rules editor, so the list can never drift
@@ -2274,6 +2459,183 @@ function buildStepReference() {
 	].join("\n");
 }
 const STEP_REFERENCE = buildStepReference();
+/**
+* Normalises whatever is under the store key into a full `FormState`.
+*
+* A pre-#19 saved entry is a plain DSL string; it is migrated into Advanced
+* mode with that text rather than discarded, per #19's persistence
+* requirement. Anything else unexpected (corrupt data, a future schema
+* change) falls back field-by-field to `DEFAULT_STATE` rather than being
+* treated as a hard failure.
+*/
+function normalizeSaved(raw) {
+	if (typeof raw === "string") return {
+		...DEFAULT_STATE,
+		mode: "advanced",
+		rules: raw
+	};
+	if (raw != null && typeof raw === "object") {
+		const obj = raw;
+		const from = isValidFrom(obj.from) ? obj.from : DEFAULT_STATE.from;
+		const requestedTo = typeof obj.to === "string" ? obj.to : DEFAULT_STATE.to;
+		const validTo = toOptionsFor(from);
+		const to = validTo.some((o) => o.value === requestedTo) ? requestedTo : validTo[0]?.value ?? DEFAULT_STATE.to;
+		return {
+			mode: obj.mode === "advanced" ? "advanced" : "simple",
+			field: typeof obj.field === "string" ? obj.field : DEFAULT_STATE.field,
+			from,
+			to,
+			then: isThenOp(obj.then) ? obj.then : DEFAULT_STATE.then,
+			amount: typeof obj.amount === "string" ? obj.amount : DEFAULT_STATE.amount,
+			rules: typeof obj.rules === "string" ? obj.rules : DEFAULT_STATE.rules
+		};
+	}
+	return DEFAULT_STATE;
+}
+/**
+* Resolves one field of the confirmed (or in-flight, for `dynamic`) form
+* values against the saved state: an edited field (present in `values`,
+* even as `""`) wins; an untouched one (absent) falls back to what the
+* dialog was actually showing (`saved`), never to a blank. This is the
+* per-field trap the whole form has to get right -- see #19 and #17.
+*/
+function resolveString(values, name, fallback) {
+	const value = values[name];
+	return typeof value === "string" ? value : fallback;
+}
+/**
+* Resolves the full live state of the form from whatever partial values are
+* currently known (either the final confirmed values, or the in-progress
+* values `dynamic` is re-evaluated against) plus the saved state as the
+* per-field fallback. Also re-validates `to` against the resolved `from`:
+* if the user just changed From, a stale To value from before the change is
+* replaced with the first option valid for the new From, rather than being
+* carried forward as a mismatched pair.
+*/
+function resolveLiveState(values, saved) {
+	const mode = resolveString(values, "mode", saved.mode) === "advanced" ? "advanced" : "simple";
+	const field = resolveString(values, "field", saved.field);
+	const fromRaw = resolveString(values, "from", saved.from);
+	const from = isValidFrom(fromRaw) ? fromRaw : DEFAULT_FROM;
+	const validTo = toOptionsFor(from);
+	const requestedTo = resolveString(values, "to", saved.to);
+	const to = validTo.some((o) => o.value === requestedTo) ? requestedTo : validTo[0]?.value ?? DEFAULT_TO_STEP;
+	const thenRaw = resolveString(values, "then", saved.then);
+	return {
+		mode,
+		field,
+		from,
+		to,
+		then: isThenOp(thenRaw) ? thenRaw : "none",
+		amount: resolveString(values, "amount", saved.amount),
+		rules: resolveString(values, "rules", saved.rules)
+	};
+}
+/** Composes the Simple-mode selections into exactly one DSL rule, fed
+* through the same `parseRules`/`applyRules` engine Advanced mode uses --
+* there is no second execution path. */
+function buildSimpleRuleText(state) {
+	let rule = `${state.field} | ${state.to}`;
+	if (state.then !== "none") rule += ` | ${state.then} ${state.amount}`;
+	return rule;
+}
+/**
+* Yaak's real `DynamicPromptFormArg` type attaches `dynamic` to each
+* individual input, not once to the whole form: every re-evaluation gets
+* the form's full live `values` map, but may only return a partial update
+* to the ONE input it belongs to (its own `hidden`/`options`/`defaultValue`
+* etc.), not the input array as a whole. So every conditionally-visible
+* input below carries its own small `dynamic` callback, each independently
+* re-deriving the live `FormState` from `args.values` (falling back to
+* `saved` per field, via `resolveLiveState`) and reading off just the one
+* property it owns.
+*/
+function buildInputs(saved) {
+	const initial = saved;
+	const liveState = (values) => resolveLiveState(values, saved);
+	return [
+		{
+			type: "select",
+			name: "mode",
+			label: "Mode",
+			options: MODE_OPTIONS,
+			defaultValue: initial.mode
+		},
+		{
+			type: "text",
+			name: "field",
+			label: "Field",
+			defaultValue: initial.field,
+			placeholder: DEFAULT_STATE.field,
+			description: "JSONPath to the value(s) to convert",
+			hidden: initial.mode !== "simple",
+			dynamic: (_ctx, args) => ({ hidden: liveState(args.values).mode !== "simple" })
+		},
+		{
+			type: "select",
+			name: "from",
+			label: "From",
+			options: FROM_OPTIONS,
+			defaultValue: initial.from,
+			hidden: initial.mode !== "simple",
+			dynamic: (_ctx, args) => ({ hidden: liveState(args.values).mode !== "simple" })
+		},
+		{
+			type: "select",
+			name: "to",
+			label: "To",
+			options: toOptionsFor(initial.from),
+			defaultValue: initial.to,
+			hidden: initial.mode !== "simple",
+			dynamic: (_ctx, args) => {
+				const state = liveState(args.values);
+				return {
+					hidden: state.mode !== "simple",
+					options: toOptionsFor(state.from),
+					defaultValue: state.to
+				};
+			}
+		},
+		{
+			type: "select",
+			name: "then",
+			label: "Then",
+			options: THEN_OPTIONS,
+			defaultValue: initial.then,
+			hidden: initial.mode !== "simple",
+			dynamic: (_ctx, args) => ({ hidden: liveState(args.values).mode !== "simple" })
+		},
+		{
+			type: "text",
+			name: "amount",
+			label: "Amount",
+			defaultValue: initial.amount,
+			optional: true,
+			hidden: initial.mode !== "simple" || initial.then === "none",
+			dynamic: (_ctx, args) => {
+				const state = liveState(args.values);
+				return { hidden: state.mode !== "simple" || state.then === "none" };
+			}
+		},
+		{
+			type: "markdown",
+			content: STEP_REFERENCE,
+			hidden: initial.mode !== "advanced",
+			dynamic: (_ctx, args) => ({ hidden: liveState(args.values).mode !== "advanced" })
+		},
+		{
+			type: "editor",
+			name: "rules",
+			label: "Rules",
+			language: "text",
+			defaultValue: initial.rules,
+			placeholder: PLACEHOLDER,
+			description: "One rule per line: <jsonpath> | <step> | <step>",
+			hidden: initial.mode !== "advanced",
+			dynamic: (_ctx, args) => ({ hidden: liveState(args.values).mode !== "advanced" })
+		}
+	];
+}
 async function convertResponse(ctx, httpRequest, deps) {
 	const response = (await ctx.httpResponse.find({
 		requestId: httpRequest.id,
@@ -2287,42 +2649,35 @@ async function convertResponse(ctx, httpRequest, deps) {
 		return;
 	}
 	const bodyPath = response.bodyPath;
-	const saved = await ctx.store.get(storeKey(httpRequest.id)) ?? "";
+	const saved = normalizeSaved(await ctx.store.get(storeKey(httpRequest.id)));
 	const values = await ctx.prompt.form({
 		id: "filter-convert-rules",
 		title: "Convert response",
 		confirmText: "Convert",
-		inputs: [{
-			type: "markdown",
-			content: STEP_REFERENCE
-		}, {
-			type: "editor",
-			name: "rules",
-			label: "Rules",
-			language: "text",
-			defaultValue: saved,
-			placeholder: PLACEHOLDER,
-			description: "One rule per line: <jsonpath> | <step> | <step>"
-		}]
+		inputs: buildInputs(saved)
 	});
 	if (values == null) return;
-	const edited = typeof values.rules === "string";
-	const rulesText = edited ? values.rules : saved;
-	if (rulesText.trim() === "") {
+	const state = resolveLiveState(values, saved);
+	const edited = typeof values[state.mode === "advanced" ? "rules" : "field"] === "string";
+	if ((state.mode === "advanced" ? state.rules : state.field).trim() === "") {
 		if (edited) {
 			await ctx.store.delete(storeKey(httpRequest.id));
 			await ctx.toast.show({
 				color: "info",
-				message: "Cleared the saved rules for this request"
+				message: "Cleared the saved conversion for this request"
 			});
-		} else await ctx.toast.show({
-			color: "warning",
-			message: "No rules entered"
-		});
+		} else {
+			const message = state.mode === "advanced" ? "No rules entered" : "No field entered";
+			await ctx.toast.show({
+				color: "warning",
+				message
+			});
+		}
 		return;
 	}
+	const rulesText = state.mode === "advanced" ? state.rules : buildSimpleRuleText(state);
 	try {
-		await ctx.store.set(storeKey(httpRequest.id), rulesText);
+		await ctx.store.set(storeKey(httpRequest.id), state);
 		let body;
 		try {
 			body = deps.readBody(bodyPath);

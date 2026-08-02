@@ -1,14 +1,16 @@
 import type {Context, HttpRequest} from "@yaakapp/api";
 import {describe, expect, it} from "vitest";
 import {convertResponse} from "./action";
-import {resolveRulesFormValues} from "./testSupport";
+import {resolveConvertFormValues} from "./testSupport";
 
 /**
  * Drives the real action end-to-end (dsl -> apply -> steps -> serialise) with a
  * fake ctx, returning the JSON shown in the result dialog. The two `prompt.form`
  * dialogs this action shows are disambiguated by which named input they carry
  * (mirroring action.test.ts's harness), not by call order, so the fixtures
- * can't be fooled by a reordered exchange.
+ * can't be fooled by a reordered exchange. Every fixture drives Advanced mode
+ * directly with hand-written DSL, since these tests are about the engine
+ * (dsl -> apply -> steps -> serialise), not the Simple form.
  */
 async function call(payload: unknown, rules: string): Promise<string> {
     const body = typeof payload === "string" ? payload : JSON.stringify(payload);
@@ -20,10 +22,12 @@ async function call(payload: unknown, rules: string): Promise<string> {
         prompt: {
             text: async () => null,
             form: async (args: {inputs: Array<{name?: string; defaultValue?: string}>}) => {
-                // Shares action.test.ts's model of what the rules dialog
+                // Shares action.test.ts's model of what the convert dialog
                 // resolves to (see testSupport.ts) rather than maintaining a
                 // second, independent fake of the same interface.
-                if (args.inputs.some((i) => i.name === "rules")) return resolveRulesFormValues({rules});
+                if (args.inputs.some((i) => i.name === "mode")) {
+                    return resolveConvertFormValues({mode: "advanced", rules});
+                }
                 shown = args.inputs.find((i) => i.name === "result")?.defaultValue ?? "";
                 return {};
             },

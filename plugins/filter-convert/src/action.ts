@@ -1,5 +1,6 @@
-import type {Context, HttpRequest} from "@yaakapp/api";
+import type {Context, DynamicPromptFormArg, FormInputSelectOption, HttpRequest} from "@yaakapp/api";
 import {applyRules, serialise} from "./apply";
+import {DEFAULT_FROM, DEFAULT_TO_STEP, FROM_OPTIONS, toOptionsFor} from "./conversionTypes";
 import {parseRules} from "./dsl";
 import {RuleError} from "./errors";
 import {STEPS} from "./steps";
@@ -14,6 +15,51 @@ const PLACEHOLDER = [
     "$.result | hex>dec",
     "$..value | hex>dec | div 1e18",
 ].join("\n");
+
+export type Mode = "simple" | "advanced";
+export type ThenOp = "none" | "div" | "mul" | "fixed";
+
+/** Everything the convert form can hold, for either mode at once -- so
+ * switching modes never discards the other half's selections. */
+export type FormState = {
+    mode: Mode;
+    field: string;
+    from: string;
+    to: string; // a step name, e.g. "hex>dec"
+    then: ThenOp;
+    amount: string;
+    rules: string;
+};
+
+const DEFAULT_STATE: FormState = {
+    mode: "simple",
+    field: "$.result",
+    from: DEFAULT_FROM,
+    to: DEFAULT_TO_STEP,
+    then: "none",
+    amount: "",
+    rules: "",
+};
+
+const MODE_OPTIONS: FormInputSelectOption[] = [
+    {label: "Simple", value: "simple"},
+    {label: "Advanced", value: "advanced"},
+];
+
+const THEN_OPTIONS: FormInputSelectOption[] = [
+    {label: "none", value: "none"},
+    {label: "divide by", value: "div"},
+    {label: "multiply by", value: "mul"},
+    {label: "round to N places", value: "fixed"},
+];
+
+function isThenOp(value: unknown): value is ThenOp {
+    return value === "none" || value === "div" || value === "mul" || value === "fixed";
+}
+
+function isValidFrom(value: unknown): value is string {
+    return typeof value === "string" && FROM_OPTIONS.some((o) => o.value === value);
+}
 
 /**
  * Groups every step actually registered in `STEPS` into families for the
@@ -98,6 +144,187 @@ function buildStepReference(): string {
 
 const STEP_REFERENCE = buildStepReference();
 
+/**
+ * Normalises whatever is under the store key into a full `FormState`.
+ *
+ * A pre-#19 saved entry is a plain DSL string; it is migrated into Advanced
+ * mode with that text rather than discarded, per #19's persistence
+ * requirement. Anything else unexpected (corrupt data, a future schema
+ * change) falls back field-by-field to `DEFAULT_STATE` rather than being
+ * treated as a hard failure.
+ */
+export function normalizeSaved(raw: unknown): FormState {
+    if (typeof raw === "string") {
+        return {...DEFAULT_STATE, mode: "advanced", rules: raw};
+    }
+    if (raw != null && typeof raw === "object") {
+        const obj = raw as Partial<Record<keyof FormState, unknown>>;
+        const from = isValidFrom(obj.from) ? obj.from : DEFAULT_STATE.from;
+        const requestedTo = typeof obj.to === "string" ? obj.to : DEFAULT_STATE.to;
+        const validTo = toOptionsFor(from);
+        const to = validTo.some((o) => o.value === requestedTo) ? requestedTo : (validTo[0]?.value ?? DEFAULT_STATE.to);
+        return {
+            mode: obj.mode === "advanced" ? "advanced" : "simple",
+            field: typeof obj.field === "string" ? obj.field : DEFAULT_STATE.field,
+            from,
+            to,
+            then: isThenOp(obj.then) ? obj.then : DEFAULT_STATE.then,
+            amount: typeof obj.amount === "string" ? obj.amount : DEFAULT_STATE.amount,
+            rules: typeof obj.rules === "string" ? obj.rules : DEFAULT_STATE.rules,
+        };
+    }
+    return DEFAULT_STATE;
+}
+
+/**
+ * Resolves one field of the confirmed (or in-flight, for `dynamic`) form
+ * values against the saved state: an edited field (present in `values`,
+ * even as `""`) wins; an untouched one (absent) falls back to what the
+ * dialog was actually showing (`saved`), never to a blank. This is the
+ * per-field trap the whole form has to get right -- see #19 and #17.
+ */
+function resolveString(values: Record<string, unknown>, name: string, fallback: string): string {
+    const value = values[name];
+    return typeof value === "string" ? value : fallback;
+}
+
+/**
+ * Resolves the full live state of the form from whatever partial values are
+ * currently known (either the final confirmed values, or the in-progress
+ * values `dynamic` is re-evaluated against) plus the saved state as the
+ * per-field fallback. Also re-validates `to` against the resolved `from`:
+ * if the user just changed From, a stale To value from before the change is
+ * replaced with the first option valid for the new From, rather than being
+ * carried forward as a mismatched pair.
+ */
+function resolveLiveState(values: Record<string, unknown>, saved: FormState): FormState {
+    const modeRaw = resolveString(values, "mode", saved.mode);
+    const mode: Mode = modeRaw === "advanced" ? "advanced" : "simple";
+
+    const field = resolveString(values, "field", saved.field);
+
+    const fromRaw = resolveString(values, "from", saved.from);
+    const from = isValidFrom(fromRaw) ? fromRaw : DEFAULT_FROM;
+
+    const validTo = toOptionsFor(from);
+    const requestedTo = resolveString(values, "to", saved.to);
+    const to = validTo.some((o) => o.value === requestedTo) ? requestedTo : (validTo[0]?.value ?? DEFAULT_TO_STEP);
+
+    const thenRaw = resolveString(values, "then", saved.then);
+    const then: ThenOp = isThenOp(thenRaw) ? thenRaw : "none";
+
+    const amount = resolveString(values, "amount", saved.amount);
+    const rules = resolveString(values, "rules", saved.rules);
+
+    return {mode, field, from, to, then, amount, rules};
+}
+
+/** Composes the Simple-mode selections into exactly one DSL rule, fed
+ * through the same `parseRules`/`applyRules` engine Advanced mode uses --
+ * there is no second execution path. */
+function buildSimpleRuleText(state: FormState): string {
+    let rule = `${state.field} | ${state.to}`;
+    if (state.then !== "none") {
+        rule += ` | ${state.then} ${state.amount}`;
+    }
+    return rule;
+}
+
+/**
+ * Yaak's real `DynamicPromptFormArg` type attaches `dynamic` to each
+ * individual input, not once to the whole form: every re-evaluation gets
+ * the form's full live `values` map, but may only return a partial update
+ * to the ONE input it belongs to (its own `hidden`/`options`/`defaultValue`
+ * etc.), not the input array as a whole. So every conditionally-visible
+ * input below carries its own small `dynamic` callback, each independently
+ * re-deriving the live `FormState` from `args.values` (falling back to
+ * `saved` per field, via `resolveLiveState`) and reading off just the one
+ * property it owns.
+ */
+function buildInputs(saved: FormState): DynamicPromptFormArg[] {
+    const initial = saved;
+    const liveState = (values: Record<string, unknown>) => resolveLiveState(values, saved);
+
+    return [
+        {
+            type: "select",
+            name: "mode",
+            label: "Mode",
+            options: MODE_OPTIONS,
+            defaultValue: initial.mode,
+        },
+        {
+            type: "text",
+            name: "field",
+            label: "Field",
+            defaultValue: initial.field,
+            placeholder: DEFAULT_STATE.field,
+            description: "JSONPath to the value(s) to convert",
+            hidden: initial.mode !== "simple",
+            dynamic: (_ctx, args) => ({hidden: liveState(args.values).mode !== "simple"}),
+        },
+        {
+            type: "select",
+            name: "from",
+            label: "From",
+            options: FROM_OPTIONS,
+            defaultValue: initial.from,
+            hidden: initial.mode !== "simple",
+            dynamic: (_ctx, args) => ({hidden: liveState(args.values).mode !== "simple"}),
+        },
+        {
+            type: "select",
+            name: "to",
+            label: "To",
+            options: toOptionsFor(initial.from),
+            defaultValue: initial.to,
+            hidden: initial.mode !== "simple",
+            dynamic: (_ctx, args) => {
+                const state = liveState(args.values);
+                return {hidden: state.mode !== "simple", options: toOptionsFor(state.from), defaultValue: state.to};
+            },
+        },
+        {
+            type: "select",
+            name: "then",
+            label: "Then",
+            options: THEN_OPTIONS,
+            defaultValue: initial.then,
+            hidden: initial.mode !== "simple",
+            dynamic: (_ctx, args) => ({hidden: liveState(args.values).mode !== "simple"}),
+        },
+        {
+            type: "text",
+            name: "amount",
+            label: "Amount",
+            defaultValue: initial.amount,
+            optional: true,
+            hidden: initial.mode !== "simple" || initial.then === "none",
+            dynamic: (_ctx, args) => {
+                const state = liveState(args.values);
+                return {hidden: state.mode !== "simple" || state.then === "none"};
+            },
+        },
+        {
+            type: "markdown",
+            content: STEP_REFERENCE,
+            hidden: initial.mode !== "advanced",
+            dynamic: (_ctx, args) => ({hidden: liveState(args.values).mode !== "advanced"}),
+        },
+        {
+            type: "editor",
+            name: "rules",
+            label: "Rules",
+            language: "text",
+            defaultValue: initial.rules,
+            placeholder: PLACEHOLDER,
+            description: "One rule per line: <jsonpath> | <step> | <step>",
+            hidden: initial.mode !== "advanced",
+            dynamic: (_ctx, args) => ({hidden: liveState(args.values).mode !== "advanced"}),
+        },
+    ];
+}
+
 export async function convertResponse(
     ctx: Context,
     httpRequest: HttpRequest,
@@ -111,24 +338,13 @@ export async function convertResponse(
     }
     const bodyPath = response.bodyPath;
 
-    const saved = (await ctx.store.get<string>(storeKey(httpRequest.id))) ?? "";
+    const saved = normalizeSaved(await ctx.store.get<unknown>(storeKey(httpRequest.id)));
 
     const values = await ctx.prompt.form({
         id: "filter-convert-rules",
         title: "Convert response",
         confirmText: "Convert",
-        inputs: [
-            {type: "markdown", content: STEP_REFERENCE},
-            {
-                type: "editor",
-                name: "rules",
-                label: "Rules",
-                language: "text",
-                defaultValue: saved,
-                placeholder: PLACEHOLDER,
-                description: "One rule per line: <jsonpath> | <step> | <step>",
-            },
-        ],
+        inputs: buildInputs(saved),
     });
 
     // A genuine cancel (backdrop click, escape, explicit Cancel) resolves
@@ -136,45 +352,55 @@ export async function convertResponse(
     // was meant to matter here.
     if (values == null) return;
 
-    // Yaak's prompt value state starts as `{}` and is populated ONLY by the
-    // rules field's `onChange`, which fires only when the user actually
-    // edits it (see apps/yaak-client/components/core/Prompt.tsx). So
-    // `values.rules` being `undefined` does NOT mean the field was blank --
-    // it means the user confirmed a prefilled dialog without touching it.
-    // Treating that the same as a cancel is exactly the bug this fixes: it
-    // must fall back to the value the field was actually showing, i.e. the
-    // rules already saved for this request.
-    const edited = typeof values.rules === "string";
-    const rulesText = edited ? (values.rules as string) : saved;
+    // Yaak's prompt value state starts as `{}` and is populated ONLY by each
+    // input's own `onChange`, which fires only when the user actually edits
+    // it (see apps/yaak-client/components/core/Prompt.tsx). So a field being
+    // `undefined` here does NOT mean it was blank/unselected -- it means the
+    // user confirmed without touching it. Every field is resolved
+    // independently against the saved state; a partially-filled `values`
+    // object must never be treated as a cancel, nor must an untouched field
+    // be treated as empty.
+    const state = resolveLiveState(values, saved);
 
-    // A blank rules text now means one of two different things depending on
-    // how it got here, and they must not be conflated:
-    if (rulesText.trim() === "") {
+    // Which text field decides "was this actively cleared" depends on the
+    // resolved mode: Field in Simple, Rules in Advanced -- mirroring the
+    // single-editor behaviour this form replaces (see #17).
+    const editedKey = state.mode === "advanced" ? "rules" : "field";
+    const edited = typeof values[editedKey] === "string";
+    const primaryText = state.mode === "advanced" ? state.rules : state.field;
+
+    // A blank primary text now means one of two different things depending
+    // on how it got here, and they must not be conflated:
+    if (primaryText.trim() === "") {
         if (edited) {
             // The user actively cleared a field that had content -- clearing
             // a prefilled field IS an edit, so `onChange` still fires with
             // `""`. Treat it as an explicit CLEAR: without this, once any
-            // rule (good or broken) is saved for a request, there would be
-            // no path back to "no saved rule" -- clearing the box and
-            // confirming would do nothing, and the stale value would keep
-            // reappearing on every future run. Acknowledge it with a toast
-            // so the action isn't mistaken for the dialog swallowing input.
+            // conversion (good or broken) is saved for a request, there
+            // would be no path back to "nothing saved" -- clearing the box
+            // and confirming would do nothing, and the stale value would
+            // keep reappearing on every future run. Acknowledge it with a
+            // toast so the action isn't mistaken for the dialog swallowing
+            // input.
             await ctx.store.delete(storeKey(httpRequest.id));
-            await ctx.toast.show({color: "info", message: "Cleared the saved rules for this request"});
+            await ctx.toast.show({color: "info", message: "Cleared the saved conversion for this request"});
         } else {
             // Confirmed without editing, and there was nothing saved to fall
             // back to either -- there is nothing to clear and nothing to
             // convert. "Cleared" would be a lie here, so say what actually
             // happened instead.
-            await ctx.toast.show({color: "warning", message: "No rules entered"});
+            const message = state.mode === "advanced" ? "No rules entered" : "No field entered";
+            await ctx.toast.show({color: "warning", message});
         }
         return;
     }
 
-    // Persist the raw text before it is validated at all. If parsing or
-    // conversion fails below, the *typed* text (not the last-good save) is
-    // what the editor prefills next time, so the user is fixing their last
-    // attempt rather than retyping it from scratch.
+    const rulesText = state.mode === "advanced" ? state.rules : buildSimpleRuleText(state);
+
+    // Persist the resolved structured state before it is validated at all.
+    // If parsing or conversion fails below, this is what the dialog
+    // prefills next time, so the user is fixing their last attempt rather
+    // than retyping it from scratch.
     //
     // Everything from here on is wrapped in one outer try/catch. `RuleError`
     // still gets its own specific, actionable message below, but ANY other
@@ -185,7 +411,7 @@ export async function convertResponse(
     // bare, contextless runtime error; a toast can at least name what went
     // wrong.
     try {
-        await ctx.store.set(storeKey(httpRequest.id), rulesText);
+        await ctx.store.set(storeKey(httpRequest.id), state);
 
         let body: string;
         try {

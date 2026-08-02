@@ -14,7 +14,19 @@ most recent response body, and shows the converted JSON in a read-only result di
 
 1. Send a request as usual.
 2. Right-click the request and choose **Convert response**.
-3. Enter rules, one per line:
+3. Pick a **Mode**:
+   - **Simple** (default) — fill in **Field** (a JSONPath, defaulting to `$.result`), then pick
+     **From** and **To** representations. **To** is filtered to whatever the registry actually
+     supports converting the chosen **From** into. Optionally set **Then** to `divide by`,
+     `multiply by`, or `round to N places` and fill in **Amount** — this covers everything a
+     single from→to conversion (plus one scaling step) can express, with no syntax to type.
+   - **Advanced** — the rules DSL described below, for chaining multiple steps or applying
+     several rules at once.
+4. Click **Convert**. A second dialog opens with the converted response as read-only JSON.
+
+### The Advanced rules DSL
+
+Enter rules, one per line:
 
 ```
 $.result                 | hex>dec
@@ -24,22 +36,23 @@ $.auth.token             | jwt
 $.createdAt              | epoch_ms>date
 ```
 
-4. Click **Convert**. A second dialog opens with the converted response as read-only JSON.
-
 Each rule is a JSONPath selector, then a pipeline of steps applied left to right. Lines starting
 with `#` are ignored, as are blank lines. A selector that matches nothing is not an error — the
 rest of the rules still run, and a toast notes that nothing matched.
 
-### Rules are remembered per request
+### Selections are remembered per request
 
-The rules you last entered for a request are saved and prefill the dialog next time you open
-**Convert response** on that same request, so you set them up once and re-run the conversion as
-the response changes.
+The mode and fields (Simple) or rules text (Advanced) you last used for a request are saved and
+prefill the dialog next time you open **Convert response** on that same request, so you set it up
+once and re-run the conversion as the response changes. A conversion saved before this dialog
+gained Simple mode is loaded straight into Advanced mode with its original rules text intact —
+nothing is discarded.
 
-To clear the saved rules for a request, open the dialog, delete everything in the rules box, and
-click **Convert** with it blank. This is a deliberate clear, not a no-op: a confirmation toast
-("Cleared the saved rules for this request") appears, and the dialog reopens empty next time.
-Cancelling the dialog (rather than submitting a blank box) leaves the saved rules untouched.
+To clear the saved conversion for a request, open the dialog, clear **Field** (Simple) or **Rules**
+(Advanced), and click **Convert** with it blank. This is a deliberate clear, not a no-op: a
+confirmation toast ("Cleared the saved conversion for this request") appears, and the dialog
+reopens with the plugin's hardcoded defaults next time. Cancelling the dialog (rather than
+submitting a blank field) leaves the saved conversion untouched.
 
 ## Steps
 

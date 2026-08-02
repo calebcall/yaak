@@ -2,10 +2,28 @@ import type {Context, HttpRequest} from "@yaakapp/api";
 import {describe, expect, it} from "vitest";
 import {buildStepFamilySections, convertResponse} from "./action";
 import {STEPS} from "./steps";
-import {resolveRulesFormValues} from "./testSupport";
+import type {ConvertFormOptions} from "./testSupport";
+import {resolveConvertFormValues} from "./testSupport";
 
 const REQUEST = {id: "rq_1", name: "block", url: "https://x"} as HttpRequest;
 const RPC = JSON.stringify({jsonrpc: "2.0", id: 83, result: "0x1879687"});
+
+type DynamicFn = (
+    ctx: unknown,
+    args: {values: Record<string, unknown>},
+) => Partial<FormInput> | Promise<Partial<FormInput>>;
+
+type FormInput = {
+    name?: string;
+    type?: string;
+    label?: string;
+    defaultValue?: string;
+    hidden?: boolean;
+    content?: string;
+    language?: string;
+    options?: Array<{label: string; value: string}>;
+    dynamic?: DynamicFn;
+};
 
 /**
  * Records every side effect the action performs. The store is a real, stateful
@@ -15,26 +33,20 @@ const RPC = JSON.stringify({jsonrpc: "2.0", id: 83, result: "0x1879687"});
  */
 function harness(options: {
     body?: string | null;
+    /** Whatever is currently under the store key: `undefined` (nothing saved
+     * yet), a legacy plain string, or a structured settings object. */
+    saved?: unknown;
     /**
-     * Simulates the user editing the rules field to this text (Yaak's
-     * `DynamicForm` fires `onChange`, so the returned `values.rules` is this
-     * string, even `""`). `null` simulates a genuine cancel (Yaak resolves
-     * `null` on cancel, backdrop click, or escape).
+     * What the settings dialog resolves to on confirm. Defaults to `{}`
+     * (confirmed without editing anything) -- shares
+     * `resolveConvertFormValues` with fixtures.test.ts rather than
+     * maintaining a second, independent model of the dialog.
      */
-    rules?: string | null;
-    /**
-     * Simulates confirming the dialog WITHOUT touching the rules field. Real
-     * Yaak's prompt value state starts as `{}` and is only ever populated by
-     * `onChange`, so an unedited field is simply absent from `values` --
-     * `values.rules` is `undefined`, not the `defaultValue` it was rendered
-     * with. Takes priority over `rules` when set.
-     */
-    unedited?: boolean;
-    saved?: string;
+    values?: ConvertFormOptions;
 } = {}) {
     const calls = {
         toasts: [] as Array<{color?: string; message: string}>,
-        formInputs: [] as unknown[],
+        formInputs: [] as FormInput[][],
         stored: {} as Record<string, unknown>,
         deleted: [] as string[],
         findRequestIds: [] as string[],
@@ -65,27 +77,16 @@ function harness(options: {
         },
         prompt: {
             text: async () => null,
-            form: async (args: {inputs: unknown[]}) => {
+            form: async (args: {inputs: FormInput[]}) => {
                 calls.formInputs.push(args.inputs);
-                const inputs = args.inputs as Array<{name?: string; defaultValue?: string}>;
                 // Distinguish the two dialogs this action shows by which named
                 // input they carry, not by call order -- a test may drive
                 // `convertResponse` more than once against the same harness.
-                if (inputs.some((i) => i.name === "rules")) {
-                    // A cancel always wins outright; otherwise `unedited`
-                    // overrides any provided `rules` string, and an absent
-                    // `rules` with no `unedited` falls back to a sensible
-                    // default so callers that don't care about the exact
-                    // text don't have to spell it out every time.
-                    const effective =
-                        options.rules === null
-                            ? null
-                            : options.unedited
-                              ? undefined
-                              : (options.rules ?? "$.result | hex>dec");
-                    return resolveRulesFormValues({rules: effective});
+                // Only the settings dialog carries a "mode" input.
+                if (args.inputs.some((i) => i.name === "mode")) {
+                    return resolveConvertFormValues(options.values ?? {});
                 }
-                const input = inputs.find((i) => i.name === "result");
+                const input = args.inputs.find((i) => i.name === "result");
                 calls.shownResult = input?.defaultValue ?? null;
                 return {};
             },
@@ -98,50 +99,237 @@ function harness(options: {
 }
 
 describe("convertResponse", () => {
-    it("shows the converted body in the result dialog", async () => {
-        const h = harness();
-        await convertResponse(h.ctx, REQUEST, h.deps);
-        expect(JSON.parse(h.calls.shownResult!)).toEqual({jsonrpc: "2.0", id: 83, result: 25663111});
+    describe("Simple mode defaults", () => {
+        it("converts the motivating payload with no syntax typed", async () => {
+            const h = harness();
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            expect(JSON.parse(h.calls.shownResult!)).toEqual({jsonrpc: "2.0", id: 83, result: 25663111});
+        });
+
+        it("defaults to Simple mode, Field $.result, From hex, To decimal, Then none", async () => {
+            const h = harness();
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            const first = h.calls.formInputs[0]!;
+            expect(first.find((i) => i.name === "mode")?.defaultValue).toBe("simple");
+            expect(first.find((i) => i.name === "field")?.defaultValue).toBe("$.result");
+            expect(first.find((i) => i.name === "from")?.defaultValue).toBe("hex");
+            expect(first.find((i) => i.name === "to")?.defaultValue).toBe("hex>dec");
+            expect(first.find((i) => i.name === "then")?.defaultValue).toBe("none");
+        });
+
+        it("hides the Advanced markdown and Rules editor, shows the Simple inputs", async () => {
+            const h = harness();
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            const first = h.calls.formInputs[0]!;
+            expect(first.find((i) => i.type === "markdown")?.hidden).toBe(true);
+            expect(first.find((i) => i.name === "rules")?.hidden).toBe(true);
+            expect(first.find((i) => i.name === "field")?.hidden).toBe(false);
+            expect(first.find((i) => i.name === "from")?.hidden).toBe(false);
+            expect(first.find((i) => i.name === "to")?.hidden).toBe(false);
+            expect(first.find((i) => i.name === "then")?.hidden).toBe(false);
+        });
+
+        it("hides Amount until Then is set", async () => {
+            const h = harness();
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            const first = h.calls.formInputs[0]!;
+            expect(first.find((i) => i.name === "amount")?.hidden).toBe(true);
+        });
+
+        it("saves the resolved structured state against the request id", async () => {
+            const h = harness();
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            expect(h.calls.stored["rules:rq_1"]).toEqual({
+                mode: "simple",
+                field: "$.result",
+                from: "hex",
+                to: "hex>dec",
+                then: "none",
+                amount: "",
+                rules: "",
+            });
+        });
     });
 
-    it("looks up the response for this request's id", async () => {
-        const h = harness();
-        await convertResponse(h.ctx, REQUEST, h.deps);
-        expect(h.calls.findRequestIds).toEqual(["rq_1"]);
+    // Yaak's real `dynamic` callback lives on each individual input (it can
+    // only return a partial update to the ONE input it belongs to), not
+    // once on the whole form -- see the comment on `buildInputs` in
+    // action.ts. Each test below drives one input's own `dynamic` directly.
+    describe("dynamic()", () => {
+        function inputNamed(inputs: FormInput[], name: string): FormInput {
+            const input = inputs.find((i) => i.name === name);
+            if (input?.dynamic == null) throw new Error(`no dynamic input named "${name}"`);
+            return input;
+        }
+
+        function markdownInput(inputs: FormInput[]): FormInput {
+            const input = inputs.find((i) => i.type === "markdown");
+            if (input?.dynamic == null) throw new Error("no dynamic markdown input");
+            return input;
+        }
+
+        it("filters To options by the chosen From", async () => {
+            const h = harness();
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            const to = inputNamed(h.calls.formInputs[0]!, "to");
+            const result = await to.dynamic!(h.ctx, {values: {from: "text"}});
+            expect((result.options ?? []).map((o) => o.value).sort()).toEqual(
+                ["text>base64", "text>base64url", "text>hexbytes", "text>urlenc"].sort(),
+            );
+        });
+
+        it("resets To to a valid option when the new From no longer supports the old To", async () => {
+            const h = harness();
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            const to = inputNamed(h.calls.formInputs[0]!, "to");
+            // "hex>dec" (the default To for From=hex) is not a valid To for From=text.
+            const result = await to.dynamic!(h.ctx, {values: {from: "text", to: "hex>dec"}});
+            expect(result.defaultValue).toBe("text>base64");
+        });
+
+        it("reveals Amount once Then is set to something other than none", async () => {
+            const h = harness();
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            const amount = inputNamed(h.calls.formInputs[0]!, "amount");
+            const result = await amount.dynamic!(h.ctx, {values: {then: "div"}});
+            expect(result.hidden).toBe(false);
+        });
+
+        it("keeps Amount hidden while Then is none", async () => {
+            const h = harness();
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            const amount = inputNamed(h.calls.formInputs[0]!, "amount");
+            const result = await amount.dynamic!(h.ctx, {values: {then: "none"}});
+            expect(result.hidden).toBe(true);
+        });
+
+        it("hides Simple inputs and shows Advanced when Mode switches to advanced", async () => {
+            const h = harness();
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            const first = h.calls.formInputs[0]!;
+            const field = await inputNamed(first, "field").dynamic!(h.ctx, {values: {mode: "advanced"}});
+            const markdown = await markdownInput(first).dynamic!(h.ctx, {values: {mode: "advanced"}});
+            const rules = await inputNamed(first, "rules").dynamic!(h.ctx, {values: {mode: "advanced"}});
+            expect(field.hidden).toBe(true);
+            expect(markdown.hidden).toBe(false);
+            expect(rules.hidden).toBe(false);
+        });
+
+        it("hides Advanced and shows Simple inputs when Mode switches back to simple", async () => {
+            const h = harness({saved: "$.saved | hex>dec"}); // opens already in Advanced mode
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            const first = h.calls.formInputs[0]!;
+            const field = await inputNamed(first, "field").dynamic!(h.ctx, {values: {mode: "simple"}});
+            const markdown = await markdownInput(first).dynamic!(h.ctx, {values: {mode: "simple"}});
+            expect(field.hidden).toBe(false);
+            expect(markdown.hidden).toBe(true);
+        });
     });
 
-    it("saves the rules against the request id", async () => {
-        const h = harness();
-        await convertResponse(h.ctx, REQUEST, h.deps);
-        expect(h.calls.stored["rules:rq_1"]).toBe("$.result | hex>dec");
+    describe("the unedited-field trap", () => {
+        // A clean, semantically-valid chain with no Then/Amount, so the
+        // conversion itself can be asserted alongside the persisted state.
+        const SAVED_SIMPLE = {
+            mode: "simple" as const,
+            field: "$.custom",
+            from: "decimal",
+            to: "dec>hex",
+            then: "none" as const,
+            amount: "",
+            rules: "",
+        };
+
+        it("reuses every saved selection when confirming without editing any field", async () => {
+            const h = harness({body: JSON.stringify({custom: 40}), saved: SAVED_SIMPLE, values: {}});
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            expect(JSON.parse(h.calls.shownResult!).custom).toBe("0x28");
+            expect(h.calls.stored["rules:rq_1"]).toEqual(SAVED_SIMPLE);
+        });
+
+        it("keeps every other saved field when only `to` is edited", async () => {
+            const h = harness({saved: SAVED_SIMPLE, values: {to: "dec>bin"}});
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            expect(h.calls.stored["rules:rq_1"]).toEqual({...SAVED_SIMPLE, to: "dec>bin"});
+        });
+
+        it("keeps every other saved field when only `amount` is edited", async () => {
+            // hex -> decimal, then div by an amount -- a chain where Amount
+            // actually matters, distinct from SAVED_SIMPLE above.
+            const savedWithThen = {
+                mode: "simple" as const,
+                field: "$.custom",
+                from: "hex",
+                to: "hex>dec",
+                then: "div" as const,
+                amount: "2",
+                rules: "",
+            };
+            const h = harness({body: JSON.stringify({custom: "0x28"}), saved: savedWithThen, values: {amount: "4"}});
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            expect(h.calls.stored["rules:rq_1"]).toEqual({...savedWithThen, amount: "4"});
+            // 40 / 4 = 10, proving the edited amount (not the saved "2") was
+            // actually used, not just persisted.
+            expect(JSON.parse(h.calls.shownResult!).custom).toBe("10");
+        });
+
+        it("runs the conversion using the prefilled rules text when Advanced mode is confirmed without editing", async () => {
+            const h = harness({saved: {...SAVED_SIMPLE, mode: "advanced", rules: "$.result | hex>dec"}, values: {}});
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            expect(JSON.parse(h.calls.shownResult!)).toEqual({jsonrpc: "2.0", id: 83, result: 25663111});
+        });
     });
 
-    it("prefills the editor with the rules saved for this request", async () => {
-        const h = harness({saved: "$.saved | hex>dec"});
-        await convertResponse(h.ctx, REQUEST, h.deps);
-        const first = h.calls.formInputs[0] as Array<{name?: string; defaultValue?: string}>;
-        expect(first.find((i) => i.name === "rules")?.defaultValue).toBe("$.saved | hex>dec");
+    describe("legacy migration", () => {
+        it("loads a legacy string-valued store entry into Advanced mode with that text", async () => {
+            const h = harness({saved: "$.saved | hex>dec", values: {}});
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            const first = h.calls.formInputs[0]!;
+            expect(first.find((i) => i.name === "mode")?.defaultValue).toBe("advanced");
+            expect(first.find((i) => i.name === "rules")?.defaultValue).toBe("$.saved | hex>dec");
+            expect(first.find((i) => i.type === "markdown")?.hidden).toBe(false);
+            expect(first.find((i) => i.name === "field")?.hidden).toBe(true);
+        });
+
+        it("still runs the migrated legacy rule", async () => {
+            const h = harness({body: JSON.stringify({saved: "0x1879687"}), saved: "$.saved | hex>dec", values: {}});
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            expect(JSON.parse(h.calls.shownResult!).saved).toBe(25663111);
+        });
+    });
+
+    describe("Then/Amount rule composition", () => {
+        it("appends `div <amount>` when Then is 'divide by'", async () => {
+            const h = harness({
+                body: JSON.stringify({result: "0xde0b6b3a7640000"}),
+                values: {then: "div", amount: "1e18"},
+            });
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            expect(JSON.parse(h.calls.shownResult!).result).toBe("1");
+        });
+
+        it("appends `mul <amount>` when Then is 'multiply by'", async () => {
+            const h = harness({body: JSON.stringify({result: "0xa"}), values: {then: "mul", amount: "2"}});
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            expect(JSON.parse(h.calls.shownResult!).result).toBe("20");
+        });
+
+        it("appends `fixed <amount>` when Then is 'round to N places'", async () => {
+            const h = harness({values: {then: "fixed", amount: "2"}}); // default body, default From hex -> To decimal
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            expect(JSON.parse(h.calls.shownResult!).result).toBe("25663111.00");
+        });
     });
 
     it("shows a step reference covering every registered step", async () => {
-        const h = harness();
+        const h = harness({values: {mode: "advanced"}});
         await convertResponse(h.ctx, REQUEST, h.deps);
-        const first = h.calls.formInputs[0] as Array<{type?: string; content?: string}>;
+        const first = h.calls.formInputs[0]!;
         const reference = first.find((i) => i.type === "markdown");
         expect(reference?.content).toBeTruthy();
-        // The card embeds the generated family sections verbatim.
         expect(reference!.content).toContain(buildStepFamilySections());
     });
 
     it("lists every registered step in the GENERATED family sections specifically", () => {
-        // Asserting against the whole card (as the previous version of this
-        // guard did) is a weaker check than it looks: `hex>dec` and `jwt`
-        // also appear in the hand-written Examples block below the
-        // generated sections, so a substring search over the full card
-        // could pass by accident for exactly those two names even if the
-        // generator itself dropped them. Asserting against
-        // `buildStepFamilySections()` directly -- which contains no
-        // hand-written text at all -- closes that blind spot.
         const sections = buildStepFamilySections();
         for (const name of Object.keys(STEPS)) {
             expect(sections).toContain(name);
@@ -153,21 +341,10 @@ describe("convertResponse", () => {
         expect(sections).toContain("`div <n>`");
         expect(sections).toContain("`mul <n>`");
         expect(sections).toContain("`fixed <n>`");
-        // Zero-arity steps stay bare, not `hex>dec <n>`.
         expect(sections).toContain("`hex>dec`");
         expect(sections).not.toContain("hex>dec <n>");
     });
 
-    // Yaak renders this markdown with react-markdown + remark-gfm and no
-    // rehype-raw, so any text shaped like an HTML tag (e.g. a bare "<n>")
-    // that sits OUTSIDE a backtick code span is parsed as raw HTML and
-    // silently dropped from what the user sees -- this is exactly how the
-    // arity hint on `div`, `mul`, and `fixed` used to vanish, leaving "div ,
-    // fixed , mul" with a dangling space. This test simulates that specific
-    // rendering behaviour (strip code spans, since a renderer without
-    // rehype-raw treats their contents as literal text, then check nothing
-    // HTML-tag-shaped survives outside them) rather than merely re-asserting
-    // the raw source string, so it fails the same way the real UI would.
     it("never leaves an angle-bracket placeholder outside a code span", () => {
         const sections = buildStepFamilySections();
         const outsideCodeSpans = sections.replace(/`[^`]*`/g, "");
@@ -175,9 +352,9 @@ describe("convertResponse", () => {
     });
 
     it("shows worked examples covering the encoding and structured families", async () => {
-        const h = harness();
+        const h = harness({values: {mode: "advanced"}});
         await convertResponse(h.ctx, REQUEST, h.deps);
-        const first = h.calls.formInputs[0] as Array<{type?: string; content?: string}>;
+        const first = h.calls.formInputs[0]!;
         const reference = first.find((i) => i.type === "markdown");
         expect(reference?.content).toMatch(/base64.*\|.*json/);
         expect(reference?.content).toMatch(/jwt/);
@@ -186,78 +363,92 @@ describe("convertResponse", () => {
     it("offers the rules editor with JSON-free plain text", async () => {
         const h = harness();
         await convertResponse(h.ctx, REQUEST, h.deps);
-        const first = h.calls.formInputs[0] as Array<{name?: string; type?: string; language?: string}>;
+        const first = h.calls.formInputs[0]!;
         const rules = first.find((i) => i.name === "rules");
         expect(rules?.type).toBe("editor");
         expect(rules?.language).not.toBe("json");
     });
 
     it("does nothing when the dialog is cancelled", async () => {
-        const h = harness({rules: null});
+        const h = harness({values: {cancelled: true}});
         await convertResponse(h.ctx, REQUEST, h.deps);
         expect(h.calls.shownResult).toBeNull();
         expect(h.calls.stored).toEqual({});
         expect(h.calls.deleted).toEqual([]); // a genuine cancel must not touch the store at all
     });
 
-    // Yaak's real prompt value state starts as `{}` and is only populated by
-    // `onChange`, so confirming a prefilled field without editing it returns
-    // `values` with no `rules` key at all -- not the prefilled string. This
-    // must fall back to the prefilled (saved) rules and still run the
-    // conversion, not be treated as a cancel.
-    it("runs the conversion using the prefilled rules when confirmed without editing", async () => {
-        const h = harness({saved: "$.result | hex>dec", unedited: true});
-        await convertResponse(h.ctx, REQUEST, h.deps);
-        expect(JSON.parse(h.calls.shownResult!)).toEqual({jsonrpc: "2.0", id: 83, result: 25663111});
-    });
+    describe("clearing", () => {
+        it("clears a previously saved conversion when Field (Simple) is actively emptied", async () => {
+            const h = harness({saved: {mode: "simple", field: "$.old", from: "hex", to: "hex>dec", then: "none", amount: "", rules: ""}, values: {field: ""}});
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            expect(h.calls.deleted).toEqual(["rules:rq_1"]);
+            expect(h.calls.toasts.some((t) => /cleared/i.test(t.message))).toBe(true);
+            expect(h.calls.stored).toEqual({});
+            expect(h.calls.shownResult).toBeNull();
+        });
 
-    it("clears a previously saved rule when the submission is actively emptied", async () => {
-        const h = harness({saved: "$.saved | hex>dec", rules: ""});
-        await convertResponse(h.ctx, REQUEST, h.deps);
-        expect(h.calls.deleted).toEqual(["rules:rq_1"]);
-        expect(h.calls.toasts.some((t) => /cleared/i.test(t.message))).toBe(true);
-        expect(h.calls.stored).toEqual({}); // no save attempted
-        expect(h.calls.shownResult).toBeNull(); // no conversion attempted
-    });
+        it("clears a previously saved conversion when Field is emptied to whitespace", async () => {
+            const h = harness({saved: {mode: "simple", field: "$.old", from: "hex", to: "hex>dec", then: "none", amount: "", rules: ""}, values: {field: "   "}});
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            expect(h.calls.deleted).toEqual(["rules:rq_1"]);
+            expect(h.calls.toasts.some((t) => /cleared/i.test(t.message))).toBe(true);
+        });
 
-    it("clears a previously saved rule when the submission is blank", async () => {
-        const h = harness({saved: "$.saved | hex>dec", rules: "   "});
-        await convertResponse(h.ctx, REQUEST, h.deps);
-        expect(h.calls.deleted).toEqual(["rules:rq_1"]);
-        expect(h.calls.toasts.some((t) => /cleared/i.test(t.message))).toBe(true);
-        expect(h.calls.stored).toEqual({}); // no save attempted
-        expect(h.calls.shownResult).toBeNull(); // no conversion attempted
-    });
+        it("clears a previously saved conversion when Rules (Advanced) is actively emptied", async () => {
+            const h = harness({saved: "$.saved | hex>dec", values: {rules: ""}});
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            expect(h.calls.deleted).toEqual(["rules:rq_1"]);
+            expect(h.calls.toasts.some((t) => /cleared/i.test(t.message))).toBe(true);
+            expect(h.calls.stored).toEqual({});
+            expect(h.calls.shownResult).toBeNull();
+        });
 
-    it("clears without crashing when there was never a saved rule", async () => {
-        const h = harness({rules: "   "});
-        await expect(convertResponse(h.ctx, REQUEST, h.deps)).resolves.toBeUndefined();
-        expect(h.calls.deleted).toEqual(["rules:rq_1"]);
-        expect(h.calls.shownResult).toBeNull();
-    });
+        it("clears without crashing when there was never a saved conversion", async () => {
+            const h = harness({values: {field: ""}});
+            await expect(convertResponse(h.ctx, REQUEST, h.deps)).resolves.toBeUndefined();
+            expect(h.calls.deleted).toEqual(["rules:rq_1"]);
+            expect(h.calls.shownResult).toBeNull();
+        });
 
-    it("gives an honest message when nothing was saved and nothing was typed", async () => {
-        const h = harness({unedited: true}); // no `saved` -> the field was prefilled empty
-        await convertResponse(h.ctx, REQUEST, h.deps);
-        expect(h.calls.toasts.some((t) => /no rules entered/i.test(t.message))).toBe(true);
-        expect(h.calls.toasts.some((t) => /cleared/i.test(t.message))).toBe(false);
-        expect(h.calls.deleted).toEqual([]);
-        expect(h.calls.stored).toEqual({});
-        expect(h.calls.shownResult).toBeNull();
-    });
+        it("gives an honest message when Advanced is selected but nothing was ever typed or saved", async () => {
+            const h = harness({values: {mode: "advanced"}});
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            expect(h.calls.toasts.some((t) => /no rules entered/i.test(t.message))).toBe(true);
+            expect(h.calls.toasts.some((t) => /cleared/i.test(t.message))).toBe(false);
+            expect(h.calls.deleted).toEqual([]);
+            expect(h.calls.stored).toEqual({});
+            expect(h.calls.shownResult).toBeNull();
+        });
 
-    it("prefills the editor empty on the next open after a clear", async () => {
-        const h = harness({saved: "$.saved | hex>dec", rules: "   "});
-        await convertResponse(h.ctx, REQUEST, h.deps); // clears the saved rule
-        await convertResponse(h.ctx, REQUEST, h.deps); // reopens against the same store
+        // Defensive: a blank saved `field` should never occur through normal
+        // use (clearing always deletes the whole entry, and the hardcoded
+        // Simple default is never blank), but the fallback logic must still
+        // behave sanely -- as "nothing entered", not a crash -- if it ever did.
+        it("gives an honest message rather than crashing on a corrupted blank saved field", async () => {
+            const h = harness({
+                saved: {mode: "simple", field: "", from: "hex", to: "hex>dec", then: "none", amount: "", rules: ""},
+                values: {},
+            });
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            expect(h.calls.toasts.some((t) => /no field entered/i.test(t.message))).toBe(true);
+        });
 
-        const rulesPrefills = h.calls.formInputs
-            .map((inputs) =>
-                (inputs as Array<{name?: string; defaultValue?: string}>).find((i) => i.name === "rules"),
-            )
-            .filter((i): i is {name?: string; defaultValue?: string} => i != null);
-        expect(rulesPrefills).toHaveLength(2);
-        expect(rulesPrefills[1]?.defaultValue).toBe("");
+        it("reverts fully to hardcoded defaults on the next open after a clear", async () => {
+            const h = harness({saved: "$.saved | hex>dec", values: {rules: ""}});
+            await convertResponse(h.ctx, REQUEST, h.deps); // clears the saved rule
+            await convertResponse(h.ctx, REQUEST, h.deps); // reopens against the now-empty store
+
+            const settingsDialogs = h.calls.formInputs.filter((inputs) => inputs.some((i) => i.name === "mode"));
+            expect(settingsDialogs).toHaveLength(2);
+            const second = settingsDialogs[1]!;
+            // The saved entry was deleted entirely, so the reopened dialog
+            // falls all the way back to the plugin's hardcoded defaults --
+            // Simple mode with the default Field -- not a lingering blank
+            // Advanced/Rules state from before the clear.
+            expect(second.find((i) => i.name === "mode")?.defaultValue).toBe("simple");
+            expect(second.find((i) => i.name === "field")?.defaultValue).toBe("$.result");
+            expect(second.find((i) => i.name === "rules")?.defaultValue).toBe("");
+        });
     });
 
     it("toasts and stops when the request has no stored response", async () => {
@@ -275,27 +466,27 @@ describe("convertResponse", () => {
     });
 
     it("toasts the parse error for a malformed rule", async () => {
-        const h = harness({rules: "$.result | nope"});
+        const h = harness({values: {mode: "advanced", rules: "$.result | nope"}});
         await convertResponse(h.ctx, REQUEST, h.deps);
         expect(h.calls.toasts[0]?.message).toMatch(/unknown step/i);
         expect(h.calls.shownResult).toBeNull();
     });
 
     it("keeps the typed rules for next time even when they fail to parse", async () => {
-        const h = harness({rules: "$.result | nope"});
+        const h = harness({values: {mode: "advanced", rules: "$.result | nope"}});
         await convertResponse(h.ctx, REQUEST, h.deps);
-        expect(h.calls.stored["rules:rq_1"]).toBe("$.result | nope");
+        expect(h.calls.stored["rules:rq_1"]).toMatchObject({mode: "advanced", rules: "$.result | nope"});
     });
 
     it("still shows the result but warns when nothing matched", async () => {
-        const h = harness({rules: "$.nowhere | hex>dec"});
+        const h = harness({values: {mode: "advanced", rules: "$.nowhere | hex>dec"}});
         await convertResponse(h.ctx, REQUEST, h.deps);
         expect(h.calls.shownResult).not.toBeNull();
         expect(h.calls.toasts.some((t) => /no values matched/i.test(t.message))).toBe(true);
     });
 
     it("still shows the result but warns when matches could not be converted", async () => {
-        const h = harness({rules: "$.jsonrpc | hex>dec"});
+        const h = harness({values: {mode: "advanced", rules: "$.jsonrpc | hex>dec"}});
         await convertResponse(h.ctx, REQUEST, h.deps);
         expect(h.calls.shownResult).not.toBeNull();
         expect(
@@ -346,7 +537,7 @@ describe("convertResponse", () => {
     // no toast at all.
     it("toasts instead of crashing when serialising an extremely deep structure overflows the stack", async () => {
         const body = "[".repeat(3000) + '"0x1"' + "]".repeat(3000);
-        const h = harness({body, rules: "$.nope | hex>dec"});
+        const h = harness({body, values: {mode: "advanced", rules: "$.nope | hex>dec"}});
         await expect(convertResponse(h.ctx, REQUEST, h.deps)).resolves.toBeUndefined();
         expect(h.calls.toasts.some((t) => t.color === "danger")).toBe(true);
         expect(h.calls.shownResult).toBeNull();
