@@ -1,0 +1,28 @@
+{
+  "name": "@calebcall/filter-convert",
+  "displayName": "Convert",
+  "description": "Convert response fields between representations with pipeline rules",
+  "private": true,
+  "version": "0.1.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/calebcall/yaak.git",
+    "directory": "plugins/filter-convert"
+  },
+  "scripts": {
+    "build": "yaakcli build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@yaakapp/cli": "^0.7.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "@yaakapp/api": "^0.8.3",
+    "jsonpath-plus": "^10.4.0"
+  }
+}
