@@ -358,6 +358,27 @@ describe("encoding", () => {
         expect(() => runStep("text>urlenc", 42, [])).toThrow(StepError);
     });
 
+    describe("text>urlenc surrogate handling", () => {
+        // encodeURIComponent throws a native URIError on a lone surrogate
+        // (half of a would-be surrogate pair, with no partner). That's
+        // realistic input -- JSON.parse('"\\ud800"') is valid JSON, so a
+        // response field can genuinely carry one -- and the raw URIError
+        // must not escape; only StepError may.
+        it("rejects a lone surrogate as StepError, not a raw URIError", () => {
+            expect(() => runStep("text>urlenc", String.fromCharCode(0xd800), []))
+                .toThrow(StepError);
+        });
+
+        // The fix must not overcorrect: ordinary multi-byte text, including
+        // emoji (astral characters, i.e. *paired* surrogates) and accented
+        // Latin characters, is legitimate input and must keep encoding
+        // exactly as encodeURIComponent would.
+        it("still encodes ordinary non-ASCII text, including emoji", () => {
+            expect(runStep("text>urlenc", "café", [])).toBe(encodeURIComponent("café"));
+            expect(runStep("text>urlenc", "😀", [])).toBe(encodeURIComponent("😀"));
+        });
+    });
+
     describe("base64 padding", () => {
         // "QQ" is one byte's worth of base64 (6 bits short of a full group);
         // both the fully-padded canonical form and the unpadded form are

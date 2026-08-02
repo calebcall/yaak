@@ -312,7 +312,19 @@ export const STEPS: Record<string, Step> = {
     "text>base64": {arity: 0, run: (v) => Buffer.from(toText(v), "utf8").toString("base64")},
     "text>base64url": {arity: 0, run: (v) => Buffer.from(toText(v), "utf8").toString("base64url")},
     "text>hexbytes": {arity: 0, run: (v) => `0x${Buffer.from(toText(v), "utf8").toString("hex")}`},
-    "text>urlenc": {arity: 0, run: (v) => encodeURIComponent(toText(v))},
+    "text>urlenc": {
+        arity: 0,
+        run: (v) => {
+            // encodeURIComponent throws a native URIError on a lone
+            // surrogate (a realistic input: JSON.parse('"\ud800"') is valid
+            // JSON), which must not escape as anything but a StepError.
+            try {
+                return encodeURIComponent(toText(v));
+            } catch {
+                throw new StepError(`not valid text for url encoding: ${String(v)}`);
+            }
+        },
+    },
 };
 
 export function runStep(name: string, value: unknown, args: string[]): unknown {
