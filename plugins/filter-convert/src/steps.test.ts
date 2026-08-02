@@ -46,6 +46,76 @@ describe("bin and oct", () => {
     });
 });
 
+describe("cross-prefix rejection", () => {
+    it("rejects a binary literal fed to hex>dec", () => {
+        expect(() => runStep("hex>dec", "0b1010", [])).toThrow();
+    });
+
+    it("rejects an octal literal fed to hex>dec", () => {
+        expect(() => runStep("hex>dec", "0o17", [])).toThrow();
+    });
+
+    it("rejects a hex literal fed to bin>dec", () => {
+        expect(() => runStep("bin>dec", "0x10", [])).toThrow();
+    });
+
+    it("rejects an octal literal fed to bin>dec", () => {
+        expect(() => runStep("bin>dec", "0o17", [])).toThrow();
+    });
+
+    it("rejects a hex literal fed to oct>dec", () => {
+        expect(() => runStep("oct>dec", "0x17", [])).toThrow();
+    });
+
+    it("rejects a binary literal fed to oct>dec", () => {
+        expect(() => runStep("oct>dec", "0b11", [])).toThrow();
+    });
+});
+
+describe("negative round-trips", () => {
+    it("round-trips a negative value through dec>hex and hex>dec", () => {
+        const rendered = runStep("dec>hex", -255n, []);
+        expect(rendered).toBe("-0xff");
+        expect(runStep("hex>dec", rendered, [])).toBe(-255n);
+    });
+
+    it("round-trips a negative value through dec>bin and bin>dec", () => {
+        const rendered = runStep("dec>bin", -10n, []);
+        expect(rendered).toBe("-0b1010");
+        expect(runStep("bin>dec", rendered, [])).toBe(-10n);
+    });
+
+    it("round-trips a negative value through dec>oct and oct>dec", () => {
+        const rendered = runStep("dec>oct", -493n, []);
+        expect(rendered).toBe("-0o755");
+        expect(runStep("oct>dec", rendered, [])).toBe(-493n);
+    });
+});
+
+describe("dec>bin and dec>oct rejection", () => {
+    it("rejects a non-integer for dec>bin", () => {
+        expect(() => runStep("dec>bin", "1.5", [])).toThrow();
+    });
+
+    it("rejects a non-integer for dec>oct", () => {
+        expect(() => runStep("dec>oct", "1.5", [])).toThrow();
+    });
+});
+
+describe("toInteger safety", () => {
+    it("rejects an unsafe JS number", () => {
+        expect(() => runStep("dec>hex", 9007199254740993, [])).toThrow();
+    });
+
+    it("accepts the same magnitude as an integral string", () => {
+        expect(runStep("dec>hex", "9007199254740993", [])).toBe("0x20000000000001");
+    });
+
+    it("accepts the same magnitude as a bigint", () => {
+        expect(runStep("dec>hex", 9007199254740993n, [])).toBe("0x20000000000001");
+    });
+});
+
 describe("registry", () => {
     it("rejects an unknown step", () => {
         expect(() => runStep("nope", "x", [])).toThrow(/unknown step/i);
