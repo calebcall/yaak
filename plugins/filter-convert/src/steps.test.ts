@@ -212,6 +212,13 @@ describe("time", () => {
         expect(runStep("date>epoch_ms", "2025-02-04T21:48:48.123Z", [])).toBe(1738705728123n);
     });
 
+    it("rejects an unparseable date for date>epoch_ms", () => {
+        // The rejection constraint is per-step, not per-underlying-function:
+        // every other rejection test in this block calls date>epoch_s, so
+        // date>epoch_ms's own validation path needs direct coverage too.
+        expect(() => runStep("date>epoch_ms", "not a date", [])).toThrow();
+    });
+
     it("formats durations largest unit first, skipping zeroes", () => {
         expect(runStep("ms>duration", 3661000n, [])).toBe("1h 1m 1s");
         expect(runStep("ms>duration", 500n, [])).toBe("500ms");
@@ -257,12 +264,48 @@ describe("time", () => {
         expect(() => runStep("date>epoch_s", "2025-01-45T00:00:00Z", [])).toThrow();
     });
 
-    it("rejects a bare, non-instant ISO date", () => {
-        // Only the full "YYYY-MM-DDTHH:mm:ss(.sss)Z" instant form produced by
-        // epoch_s>date/epoch_ms>date is accepted, keeping the round-trip
-        // lossless and unambiguous.
+    it("rejects an out-of-range hour, minute or second", () => {
+        expect(() => runStep("date>epoch_s", "2025-01-01T24:00:00Z", [])).toThrow(StepError);
+        // A leap second: valid in real UTC, but this converter's calendar
+        // math doesn't model them, so it is rejected rather than silently
+        // treated as :59 or rolled into the next minute.
+        expect(() => runStep("date>epoch_s", "2025-06-30T23:59:60Z", [])).toThrow(StepError);
+    });
+
+    it("rejects a bare year and a datetime with no UTC offset", () => {
+        // A bare "YYYY" is too coarse to be a useful instant. A datetime with
+        // no offset, e.g. "2025-02-04T00:00", resolves to host-local time per
+        // spec and so is host-dependent — both are rejected. A bare
+        // "YYYY-MM-DD" date, by contrast, is defined as UTC by ECMA-262 and
+        // is accepted (see the "date-only ISO form" tests below).
         expect(() => runStep("date>epoch_s", "2025", [])).toThrow();
-        expect(() => runStep("date>epoch_s", "2025-02-04", [])).toThrow();
+        expect(() => runStep("date>epoch_s", "2025-02-04T00:00", [])).toThrow();
+    });
+
+    describe("date-only ISO form", () => {
+        it("accepts a bare calendar date as UTC midnight", () => {
+            expect(runStep("date>epoch_s", "2025-02-04", [])).toBe(1738627200n);
+        });
+
+        it("still rejects an invalid calendar date in date-only form", () => {
+            expect(() => runStep("date>epoch_s", "2025-02-30", [])).toThrow(StepError);
+        });
+    });
+
+    describe("numeric UTC offsets", () => {
+        it("treats +00:00 the same as a literal Z", () => {
+            expect(runStep("date>epoch_s", "2025-02-04T21:48:48+00:00", []))
+                .toBe(runStep("date>epoch_s", "2025-02-04T21:48:48Z", []));
+        });
+
+        it("applies a non-zero offset to produce the correct UTC epoch", () => {
+            expect(runStep("date>epoch_s", "2025-02-04T21:48:48+05:30", [])).toBe(1738685928n);
+        });
+
+        it("rejects a malformed offset instead of silently ignoring it", () => {
+            expect(() => runStep("date>epoch_s", "2025-02-04T21:48:48+25:00", [])).toThrow(StepError);
+            expect(() => runStep("date>epoch_s", "2025-02-04T21:48:48+05:99", [])).toThrow(StepError);
+        });
     });
 
     it("rejects a negative duration", () => {

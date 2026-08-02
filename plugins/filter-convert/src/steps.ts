@@ -83,11 +83,19 @@ function isoFromMs(ms: bigint): string {
     return iso.endsWith(".000Z") ? `${iso.slice(0, -5)}Z` : iso;
 }
 
-/** Strict ISO 8601 UTC instant: "YYYY-MM-DDTHH:mm:ss(.sss)Z". Only this exact
- * shape (the one produced by epoch_s>date / epoch_ms>date) is accepted, so
- * date>epoch_s / date>epoch_ms never have to guess at a partial or offset
- * date's meaning. */
-const ISO_INSTANT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{3}))?Z$/;
+/** Strict ISO 8601 date-only form: "YYYY-MM-DD". ECMA-262 defines this shape
+ * as UTC (unlike a bare "YYYY-MM-DDTHH:mm" with no offset, which resolves to
+ * host-local time and so is deliberately rejected below), and it is the most
+ * common date shape in real JSON payloads, so it is accepted on its own. */
+const ISO_DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/** Strict ISO 8601 UTC instant: "YYYY-MM-DDTHH:mm:ss(.sss)(Z|+HH:MM|-HH:MM)".
+ * An explicit offset (literal "Z" or a numeric "+HH:MM"/"-HH:MM") is
+ * mandatory, so date>epoch_s/date>epoch_ms never have to guess at a
+ * datetime's meaning the way a bare "YYYY-MM-DDTHH:mm" (host-local time)
+ * would force them to. */
+const ISO_INSTANT =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{3}))?(?:Z|([+-])(\d{2}):(\d{2}))$/;
 
 function daysInMonth(year: number, month: number): number {
     if (month === 2) {
@@ -97,19 +105,39 @@ function daysInMonth(year: number, month: number): number {
     return [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1] as number;
 }
 
-/** Parse a strict ISO instant string to milliseconds since the epoch.
+/** Validate year/month/day by hand rather than trusting Date.UTC, which
+ * silently rolls an invalid calendar date over into a different, valid one
+ * (e.g. "2025-02-30" becomes 2025-03-02) instead of rejecting it. */
+function assertValidCalendarDate(year: number, month: number, day: number, value: string): void {
+    if (month < 1 || month > 12) throw new StepError(`invalid month: ${value}`);
+    if (day < 1 || day > daysInMonth(year, month)) throw new StepError(`invalid day: ${value}`);
+}
+
+/** Parse a strict ISO date or instant string to milliseconds since the epoch.
  *
- * Date.parse/Date.UTC are lenient and silently roll invalid calendar dates
- * over into a different, valid one (e.g. "2025-02-30" becomes 2025-03-02),
- * which would produce a wrong-but-plausible epoch instead of an error. Every
- * field is range-checked by hand before Date.UTC ever sees it, so overflow
- * can't happen. */
+ * Date.parse is lenient and implementation-defined for anything short of a
+ * full instant, so parsing is done entirely by hand from a matched regex:
+ * every field (calendar date, time-of-day, UTC offset) is range-checked
+ * before Date.UTC ever sees it, so its silent-overflow behaviour never gets
+ * a chance to fire. */
 function msFromDate(value: unknown): bigint {
     if (typeof value !== "string") throw new StepError(`not a date string: ${String(value)}`);
-    const match = ISO_INSTANT.exec(value.trim());
-    if (match == null) throw new StepError(`not an ISO 8601 instant: ${value}`);
-    // Groups 1-6 are always present when the regex matches; only the
-    // fractional-seconds group (7) is optional.
+    const trimmed = value.trim();
+
+    const dateOnly = ISO_DATE_ONLY.exec(trimmed);
+    if (dateOnly != null) {
+        const year = Number(dateOnly[1]);
+        const month = Number(dateOnly[2]);
+        const day = Number(dateOnly[3]);
+        assertValidCalendarDate(year, month, day, value);
+        return BigInt(Date.UTC(year, month - 1, day));
+    }
+
+    const match = ISO_INSTANT.exec(trimmed);
+    if (match == null) throw new StepError(`not an ISO 8601 date: ${value}`);
+    // Groups 1-6 are always present when the regex matches. Group 7
+    // (fractional seconds) is optional; groups 8-10 (offset sign/hour/minute)
+    // are present only for a numeric offset, absent for a literal "Z".
     const year = Number(match[1]);
     const month = Number(match[2]);
     const day = Number(match[3]);
@@ -117,10 +145,25 @@ function msFromDate(value: unknown): bigint {
     const minute = Number(match[5]);
     const second = Number(match[6]);
     const ms = match[7] == null ? 0 : Number(match[7]);
-    if (month < 1 || month > 12) throw new StepError(`invalid month: ${value}`);
-    if (day < 1 || day > daysInMonth(year, month)) throw new StepError(`invalid day: ${value}`);
+    assertValidCalendarDate(year, month, day, value);
     if (hour > 23 || minute > 59 || second > 59) throw new StepError(`invalid time: ${value}`);
-    return BigInt(Date.UTC(year, month - 1, day, hour, minute, second, ms));
+
+    let offsetMs = 0n;
+    const offsetSign = match[8];
+    if (offsetSign != null) {
+        const offsetHour = Number(match[9]);
+        const offsetMinute = Number(match[10]);
+        if (offsetHour > 23 || offsetMinute > 59) {
+            throw new StepError(`invalid UTC offset: ${value}`);
+        }
+        const magnitude = BigInt(offsetHour) * 3_600_000n + BigInt(offsetMinute) * 60_000n;
+        offsetMs = offsetSign === "-" ? -magnitude : magnitude;
+    }
+
+    // Date.UTC treats the fields as if they were already UTC; a positive
+    // offset means the local clock reads ahead of UTC, so the true UTC
+    // instant is earlier by that amount (and vice versa for a negative one).
+    return BigInt(Date.UTC(year, month - 1, day, hour, minute, second, ms)) - offsetMs;
 }
 
 /** BigInt division that rounds toward negative infinity (floor), not toward
