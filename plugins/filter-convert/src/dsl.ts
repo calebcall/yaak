@@ -11,13 +11,34 @@ export type Rule = {selector: string; steps: ParsedStep[]};
  * a literal `|`, as in `$['a|b']` or `$["a|b"]`.
  *
  * Bracket/paren nesting is tracked with a single depth counter, not a stack
- * of bracket kinds. That is enough to find top-level pipes; it is not a
- * JSONPath validator. A pathological selector whose brackets net to zero
- * depth despite being mismatched (e.g. a stray `)(`) is not caught here --
- * it is left for Task 11's jsonpath-plus call to reject at evaluation time.
+ * of bracket kinds, and this is NOT a JSONPath validator -- it only finds
+ * pipes that sit outside any bracket/paren/quote. Two known consequences of
+ * that narrowness, both deliberately accepted rather than fixed here:
+ *
+ * - A pathological selector whose brackets net to zero depth despite being
+ *   mismatched (e.g. a stray `)(`) is not caught here -- it is left for
+ *   Task 11's jsonpath-plus call to reject at evaluation time.
+ * - More subtly, a *genuinely balanced* bracket or paren that appears before
+ *   the pipe the user actually intended as the selector/step separator will
+ *   absorb that pipe too, e.g. `$.a( | hex>dec ) | fixed 2` parses as
+ *   selector `$.a( | hex>dec )` with the single step `fixed 2` -- the
+ *   `hex>dec` step is silently swallowed into the selector text with no
+ *   parser diagnostic. This is intentionally not treated as an error: the
+ *   parser cannot know which pipe the user meant, and full JSONPath grammar
+ *   validation (which alone could tell "real" filter syntax from stray
+ *   punctuation) is out of scope for a module whose only job is splitting on
+ *   pipes. The consequence is bounded and safe rather than silently wrong:
+ *   `|` is not valid JSONPath outside a filter expression, so a mangled
+ *   selector like `$.a( | hex>dec )` is not valid JSONPath either. Rather
+ *   than throwing, jsonpath-plus returns an empty match set for it, so
+ *   Task 12 reports "No values were converted -- check the selector" --
+ *   the user is told to look at the right thing, even though the parser
+ *   itself stayed silent.
+ *
  * What *is* caught here, because it would otherwise silently swallow the
- * rest of the line (including every step) into the selector, is a selector
- * whose depth never returns to zero, or a quote that never closes.
+ * rest of the line (including every step) into the selector with no
+ * downstream signal at all, is a selector whose depth never returns to
+ * zero, or a quote that never closes.
  *
  * Inside a quoted section, a backslash escapes the next character so it
  * cannot prematurely close the quote, e.g. `$['a\'b']`. This is a
