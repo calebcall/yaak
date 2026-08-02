@@ -6,6 +6,10 @@ export type Step = {
     run(value: unknown, args: string[]): unknown;
 };
 
+/** Mirrors decimal.ts's MAX_EXPONENT: a four-figure decimal-places cap is far
+ * beyond any legitimate use, and keeps `fixed`'s `10n ** BigInt(places)` cheap. */
+const MAX_PLACES = 10_000;
+
 /** Coerce to a BigInt integer, rejecting anything fractional, non-numeric, or an
  * unsafe (float-corrupted) JS number. Integral strings and bigints have no such
  * ceiling — they can carry arbitrarily large exact values. */
@@ -97,6 +101,13 @@ export const STEPS: Record<string, Step> = {
                 throw new StepError(`fixed requires a non-negative integer, got: ${String(n)}`);
             }
             const places = Number.parseInt(raw, 10);
+            // roundDec computes 10n ** BigInt(places), so an unbounded places
+            // (e.g. from a hostile response body) could throw a raw RangeError
+            // or build a huge string instead of the StepError callers expect.
+            // Mirror decimal.ts's MAX_EXPONENT bound for the same reason.
+            if (places > MAX_PLACES) {
+                throw new StepError(`fixed places too large (max ${MAX_PLACES}): ${raw}`);
+            }
             return formatFixed(roundDec(parseDec(v), places), places);
         },
     },

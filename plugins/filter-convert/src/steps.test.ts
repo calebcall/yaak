@@ -1,4 +1,5 @@
 import {describe, expect, it} from "vitest";
+import {StepError} from "./errors";
 import {STEPS, runStep} from "./steps";
 
 describe("hex>dec", () => {
@@ -176,6 +177,23 @@ describe("scaling", () => {
 
     it("rejects a missing places argument for fixed", () => {
         expect(() => runStep("fixed", "1.5", [])).toThrow();
+    });
+
+    it("fixes an ordinary places value", () => {
+        expect(runStep("fixed", "1.5", ["4"])).toBe("1.5000");
+    });
+
+    it("fixes at the maximum allowed places boundary", () => {
+        expect(runStep("fixed", "1.5", ["10000"])).toBe(`1.5${"0".repeat(9999)}`);
+    });
+
+    it("rejects a places argument just beyond the maximum", () => {
+        expect(() => runStep("fixed", "1.5", ["10001"])).toThrow(StepError);
+    });
+
+    it("rejects an absurdly large places argument without crashing", () => {
+        expect(() => runStep("fixed", "1.5", ["999999999999999999999999999999"]))
+            .toThrow(StepError);
     });
 });
 
