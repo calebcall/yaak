@@ -216,7 +216,11 @@ describe("convertResponse", () => {
         });
 
         it("hides Advanced and shows Simple inputs when Mode switches back to simple", async () => {
-            const h = harness({saved: "$.saved | hex>dec"}); // opens already in Advanced mode
+            // A multi-line legacy entry isn't representable in Simple, so this
+            // opens already in Advanced mode; the dynamic() assertions below
+            // only depend on the explicit `{mode: "simple"}` passed in, not on
+            // where the dialog started, but this keeps the fixture honest.
+            const h = harness({saved: "$.saved | hex>dec\n$.other | hex>dec"});
             await convertResponse(h.ctx, REQUEST, h.deps);
             const first = h.calls.formInputs[0]!;
             const field = await inputNamed(first, "field").dynamic!(h.ctx, {values: {mode: "simple"}});
@@ -279,21 +283,111 @@ describe("convertResponse", () => {
         });
     });
 
+    // #19 follow-up: a legacy plain-string entry unconditionally landing in
+    // Advanced meant anyone who'd used the plugin before the form shipped
+    // always saw Advanced on every request they'd touched -- Simple mode
+    // was effectively unreachable for them. A legacy rule that Simple CAN
+    // express now migrates there directly; only a genuinely unrepresentable
+    // one (multiple rules, a chain of two-plus conversions, an unparsable
+    // rule) falls back to Advanced. The original text is always kept in
+    // `rules` either way, so nothing is lost regardless of which mode wins.
     describe("legacy migration", () => {
-        it("loads a legacy string-valued store entry into Advanced mode with that text", async () => {
-            const h = harness({saved: "$.saved | hex>dec", values: {}});
+        it("migrates a single hex>dec rule into Simple with the right field values", async () => {
+            const h = harness({saved: "$.result | hex>dec", values: {}});
             await convertResponse(h.ctx, REQUEST, h.deps);
             const first = h.calls.formInputs[0]!;
-            expect(first.find((i) => i.name === "mode")?.defaultValue).toBe("advanced");
-            expect(first.find((i) => i.name === "rules")?.defaultValue).toBe("$.saved | hex>dec");
-            expect(first.find((i) => i.type === "markdown")?.hidden).toBe(false);
-            expect(first.find((i) => i.name === "field")?.hidden).toBe(true);
+            expect(first.find((i) => i.name === "mode")?.defaultValue).toBe("simple");
+            expect(first.find((i) => i.name === "field")?.defaultValue).toBe("$.result");
+            expect(first.find((i) => i.name === "from")?.defaultValue).toBe("hex");
+            expect(first.find((i) => i.name === "to")?.defaultValue).toBe("hex>dec");
+            expect(first.find((i) => i.name === "then")?.defaultValue).toBe("none");
+            expect(first.find((i) => i.name === "field")?.hidden).toBe(false);
+            expect(first.find((i) => i.type === "markdown")?.hidden).toBe(true);
         });
 
         it("still runs the migrated legacy rule", async () => {
-            const h = harness({body: JSON.stringify({saved: "0x1879687"}), saved: "$.saved | hex>dec", values: {}});
+            const h = harness({body: JSON.stringify({result: "0x1879687"}), saved: "$.result | hex>dec", values: {}});
             await convertResponse(h.ctx, REQUEST, h.deps);
-            expect(JSON.parse(h.calls.shownResult!).saved).toBe(25663111);
+            expect(JSON.parse(h.calls.shownResult!).result).toBe(25663111);
+        });
+
+        it("migrates a hex>dec + div rule into Simple with Then and Amount set", async () => {
+            const h = harness({saved: "$..value | hex>dec | div 1e18", values: {}});
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            const first = h.calls.formInputs[0]!;
+            expect(first.find((i) => i.name === "mode")?.defaultValue).toBe("simple");
+            expect(first.find((i) => i.name === "field")?.defaultValue).toBe("$..value");
+            expect(first.find((i) => i.name === "from")?.defaultValue).toBe("hex");
+            expect(first.find((i) => i.name === "to")?.defaultValue).toBe("hex>dec");
+            expect(first.find((i) => i.name === "then")?.defaultValue).toBe("div");
+            expect(first.find((i) => i.name === "amount")?.defaultValue).toBe("1e18");
+            expect(first.find((i) => i.name === "amount")?.hidden).toBe(false);
+        });
+
+        it("keeps a legacy multi-line rule set in Advanced with the text intact", async () => {
+            const text = "$.result.number | hex>dec\n$.result.gasUsed | hex>dec";
+            const h = harness({saved: text, values: {}});
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            const first = h.calls.formInputs[0]!;
+            expect(first.find((i) => i.name === "mode")?.defaultValue).toBe("advanced");
+            expect(first.find((i) => i.name === "rules")?.defaultValue).toBe(text);
+        });
+
+        it("keeps a legacy two-conversion chain in Advanced with the text intact", async () => {
+            const text = "$.a | base64 | json";
+            const h = harness({saved: text, values: {}});
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            const first = h.calls.formInputs[0]!;
+            expect(first.find((i) => i.name === "mode")?.defaultValue).toBe("advanced");
+            expect(first.find((i) => i.name === "rules")?.defaultValue).toBe(text);
+        });
+
+        it("keeps legacy text that fails to parse at all in Advanced rather than crashing", async () => {
+            const text = "$.result | nope";
+            const h = harness({saved: text, values: {}});
+            await expect(convertResponse(h.ctx, REQUEST, h.deps)).resolves.toBeUndefined();
+            const first = h.calls.formInputs[0]!;
+            expect(first.find((i) => i.name === "mode")?.defaultValue).toBe("advanced");
+            expect(first.find((i) => i.name === "rules")?.defaultValue).toBe(text);
+        });
+
+        it("does not override an explicit structured Advanced choice even when its rules are representable", async () => {
+            const h = harness({
+                saved: {
+                    mode: "advanced",
+                    field: "$.result",
+                    from: "hex",
+                    to: "hex>dec",
+                    then: "none",
+                    amount: "",
+                    rules: "$.result | hex>dec",
+                },
+                values: {},
+            });
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            const first = h.calls.formInputs[0]!;
+            expect(first.find((i) => i.name === "mode")?.defaultValue).toBe("advanced");
+        });
+
+        it("still opens a fresh request (nothing saved) in Simple", async () => {
+            const h = harness();
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            const first = h.calls.formInputs[0]!;
+            expect(first.find((i) => i.name === "mode")?.defaultValue).toBe("simple");
+        });
+
+        it("rewrites a migrated legacy entry in structured shape after Convert, so migration happens once", async () => {
+            const h = harness({saved: "$.result | hex>dec", values: {}});
+            await convertResponse(h.ctx, REQUEST, h.deps);
+            expect(h.calls.stored["rules:rq_1"]).toEqual({
+                mode: "simple",
+                field: "$.result",
+                from: "hex",
+                to: "hex>dec",
+                then: "none",
+                amount: "",
+                rules: "$.result | hex>dec",
+            });
         });
     });
 
@@ -395,7 +489,9 @@ describe("convertResponse", () => {
         });
 
         it("clears a previously saved conversion when Rules (Advanced) is actively emptied", async () => {
-            const h = harness({saved: "$.saved | hex>dec", values: {rules: ""}});
+            // Multi-line, so it stays in Advanced mode rather than migrating
+            // to Simple -- this test is specifically about clearing Rules.
+            const h = harness({saved: "$.saved | hex>dec\n$.other | hex>dec", values: {rules: ""}});
             await convertResponse(h.ctx, REQUEST, h.deps);
             expect(h.calls.deleted).toEqual(["rules:rq_1"]);
             expect(h.calls.toasts.some((t) => /cleared/i.test(t.message))).toBe(true);
@@ -434,7 +530,9 @@ describe("convertResponse", () => {
         });
 
         it("reverts fully to hardcoded defaults on the next open after a clear", async () => {
-            const h = harness({saved: "$.saved | hex>dec", values: {rules: ""}});
+            // Multi-line, so it stays in Advanced mode (clearing Rules is the
+            // thing under test) rather than migrating to Simple.
+            const h = harness({saved: "$.saved | hex>dec\n$.other | hex>dec", values: {rules: ""}});
             await convertResponse(h.ctx, REQUEST, h.deps); // clears the saved rule
             await convertResponse(h.ctx, REQUEST, h.deps); // reopens against the now-empty store
 

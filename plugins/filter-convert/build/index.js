@@ -2195,6 +2195,14 @@ function deriveEdges() {
 }
 /** Every from->to conversion edge, derived from the registry -- never hand-maintained. */
 const CONVERSION_EDGES = deriveEdges();
+const EDGE_BY_STEP = new Map(CONVERSION_EDGES.map((e) => [e.step, e]));
+/** Looks up the From/To edge for a conversion step name (e.g. `"hex>dec"`),
+* or `undefined` if the step isn't a conversion step at all (div/mul/fixed,
+* or anything unregistered). Used to figure out whether a legacy DSL rule's
+* first step can be represented in the Simple form. */
+function edgeForStep(step) {
+	return EDGE_BY_STEP.get(step);
+}
 /** From options for the Simple-mode select, in registry-discovery order,
 * deduplicated. `value` is the stable internal id (also what's persisted to
 * the store); `label` is the possibly-overridden display text. */
@@ -2482,20 +2490,82 @@ function buildStepReference() {
 }
 const STEP_REFERENCE = buildStepReference();
 /**
+* Attempts to represent a legacy (pre-#19) DSL string as Simple-mode field
+* values. Reuses `parseRules` rather than writing a second parser -- it
+* already owns step-name/arity validation, and a `RuleError` from it simply
+* means "not representable in Simple, fall back to Advanced", not a crash.
+*
+* Returns `null` (meaning: stay in Advanced) unless ALL of these hold:
+* - the text is exactly one rule (one non-comment, non-blank line)
+* - that rule's first step is a registered from/to conversion step
+* - the rule has either no second step, or exactly one second step that is
+*   `div`/`mul`/`fixed` with its single (already arity-checked) argument
+*
+* Anything else -- multiple rules, a chain of two or more conversions, an
+* unmappable first step -- is out of Simple mode's reach and stays Advanced.
+*/
+function tryMigrateLegacyToSimple(rulesText) {
+	let parsed;
+	try {
+		parsed = parseRules(rulesText);
+	} catch (err) {
+		if (err instanceof RuleError) return null;
+		throw err;
+	}
+	if (parsed.length !== 1) return null;
+	const rule = parsed[0];
+	if (rule == null) return null;
+	const [first, second, ...rest] = rule.steps;
+	if (first == null || rest.length > 0) return null;
+	const edge = edgeForStep(first.name);
+	if (edge == null) return null;
+	if (second == null) return {
+		field: rule.selector,
+		from: edge.from,
+		to: edge.step,
+		then: "none",
+		amount: ""
+	};
+	if (second.name !== "div" && second.name !== "mul" && second.name !== "fixed") return null;
+	const amount = second.args[0];
+	if (amount == null) return null;
+	return {
+		field: rule.selector,
+		from: edge.from,
+		to: edge.step,
+		then: second.name,
+		amount
+	};
+}
+/**
 * Normalises whatever is under the store key into a full `FormState`.
 *
-* A pre-#19 saved entry is a plain DSL string; it is migrated into Advanced
-* mode with that text rather than discarded, per #19's persistence
-* requirement. Anything else unexpected (corrupt data, a future schema
-* change) falls back field-by-field to `DEFAULT_STATE` rather than being
-* treated as a hard failure.
+* A pre-#19 saved entry is a plain DSL string. If it can be represented in
+* Simple mode (see `tryMigrateLegacyToSimple`), it migrates there directly
+* -- most legacy rules were exactly this shape, and defaulting them all into
+* Advanced made Simple mode effectively unreachable for anyone who'd used
+* the plugin before #19 landed. Only a rule Simple genuinely cannot express
+* falls back to Advanced. Either way the original text is kept in `rules`
+* unchanged, so switching to Advanced (or Simple mode failing to reproduce
+* it for any reason) never loses it. Anything else unexpected (corrupt
+* data, a future schema change) falls back field-by-field to
+* `DEFAULT_STATE` rather than being treated as a hard failure.
 */
 function normalizeSaved(raw) {
-	if (typeof raw === "string") return {
-		...DEFAULT_STATE,
-		mode: "advanced",
-		rules: raw
-	};
+	if (typeof raw === "string") {
+		const migrated = tryMigrateLegacyToSimple(raw);
+		if (migrated != null) return {
+			...DEFAULT_STATE,
+			...migrated,
+			mode: "simple",
+			rules: raw
+		};
+		return {
+			...DEFAULT_STATE,
+			mode: "advanced",
+			rules: raw
+		};
+	}
 	if (raw != null && typeof raw === "object") {
 		const obj = raw;
 		const from = isValidFrom(obj.from) ? obj.from : DEFAULT_STATE.from;

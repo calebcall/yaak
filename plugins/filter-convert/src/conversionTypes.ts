@@ -131,6 +131,16 @@ export function conversionStepNames(): Set<string> {
     return new Set(CONVERSION_EDGES.map((e) => e.step));
 }
 
+const EDGE_BY_STEP: Map<string, ConversionEdge> = new Map(CONVERSION_EDGES.map((e) => [e.step, e]));
+
+/** Looks up the From/To edge for a conversion step name (e.g. `"hex>dec"`),
+ * or `undefined` if the step isn't a conversion step at all (div/mul/fixed,
+ * or anything unregistered). Used to figure out whether a legacy DSL rule's
+ * first step can be represented in the Simple form. */
+export function edgeForStep(step: string): ConversionEdge | undefined {
+    return EDGE_BY_STEP.get(step);
+}
+
 /** From options for the Simple-mode select, in registry-discovery order,
  * deduplicated. `value` is the stable internal id (also what's persisted to
  * the store); `label` is the possibly-overridden display text. */

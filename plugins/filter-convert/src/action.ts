@@ -1,6 +1,6 @@
 import type {Context, DynamicPromptFormArg, FormInputSelectOption, HttpRequest} from "@yaakapp/api";
 import {applyRules, serialise} from "./apply";
-import {DEFAULT_FROM, DEFAULT_TO_STEP, FROM_OPTIONS, toOptionsFor} from "./conversionTypes";
+import {DEFAULT_FROM, DEFAULT_TO_STEP, FROM_OPTIONS, edgeForStep, toOptionsFor} from "./conversionTypes";
 import {parseRules} from "./dsl";
 import {RuleError} from "./errors";
 import {STEPS} from "./steps";
@@ -145,16 +145,72 @@ function buildStepReference(): string {
 const STEP_REFERENCE = buildStepReference();
 
 /**
+ * Attempts to represent a legacy (pre-#19) DSL string as Simple-mode field
+ * values. Reuses `parseRules` rather than writing a second parser -- it
+ * already owns step-name/arity validation, and a `RuleError` from it simply
+ * means "not representable in Simple, fall back to Advanced", not a crash.
+ *
+ * Returns `null` (meaning: stay in Advanced) unless ALL of these hold:
+ * - the text is exactly one rule (one non-comment, non-blank line)
+ * - that rule's first step is a registered from/to conversion step
+ * - the rule has either no second step, or exactly one second step that is
+ *   `div`/`mul`/`fixed` with its single (already arity-checked) argument
+ *
+ * Anything else -- multiple rules, a chain of two or more conversions, an
+ * unmappable first step -- is out of Simple mode's reach and stays Advanced.
+ */
+function tryMigrateLegacyToSimple(
+    rulesText: string,
+): Pick<FormState, "field" | "from" | "to" | "then" | "amount"> | null {
+    let parsed: ReturnType<typeof parseRules>;
+    try {
+        parsed = parseRules(rulesText);
+    } catch (err) {
+        if (err instanceof RuleError) return null;
+        throw err;
+    }
+
+    if (parsed.length !== 1) return null;
+    const rule = parsed[0];
+    if (rule == null) return null;
+
+    const [first, second, ...rest] = rule.steps;
+    if (first == null || rest.length > 0) return null;
+
+    const edge = edgeForStep(first.name);
+    if (edge == null) return null;
+
+    if (second == null) {
+        return {field: rule.selector, from: edge.from, to: edge.step, then: "none", amount: ""};
+    }
+
+    if (second.name !== "div" && second.name !== "mul" && second.name !== "fixed") return null;
+    const amount = second.args[0];
+    if (amount == null) return null;
+
+    return {field: rule.selector, from: edge.from, to: edge.step, then: second.name, amount};
+}
+
+/**
  * Normalises whatever is under the store key into a full `FormState`.
  *
- * A pre-#19 saved entry is a plain DSL string; it is migrated into Advanced
- * mode with that text rather than discarded, per #19's persistence
- * requirement. Anything else unexpected (corrupt data, a future schema
- * change) falls back field-by-field to `DEFAULT_STATE` rather than being
- * treated as a hard failure.
+ * A pre-#19 saved entry is a plain DSL string. If it can be represented in
+ * Simple mode (see `tryMigrateLegacyToSimple`), it migrates there directly
+ * -- most legacy rules were exactly this shape, and defaulting them all into
+ * Advanced made Simple mode effectively unreachable for anyone who'd used
+ * the plugin before #19 landed. Only a rule Simple genuinely cannot express
+ * falls back to Advanced. Either way the original text is kept in `rules`
+ * unchanged, so switching to Advanced (or Simple mode failing to reproduce
+ * it for any reason) never loses it. Anything else unexpected (corrupt
+ * data, a future schema change) falls back field-by-field to
+ * `DEFAULT_STATE` rather than being treated as a hard failure.
  */
 export function normalizeSaved(raw: unknown): FormState {
     if (typeof raw === "string") {
+        const migrated = tryMigrateLegacyToSimple(raw);
+        if (migrated != null) {
+            return {...DEFAULT_STATE, ...migrated, mode: "simple", rules: raw};
+        }
         return {...DEFAULT_STATE, mode: "advanced", rules: raw};
     }
     if (raw != null && typeof raw === "object") {
