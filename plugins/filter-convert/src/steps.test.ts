@@ -507,6 +507,37 @@ describe("encoding", () => {
     });
 });
 
+describe("structured", () => {
+    it("parses an embedded JSON string", () => {
+        expect(runStep("json", '{"a":1,"b":[2,3]}', [])).toEqual({a: 1, b: [2, 3]});
+    });
+
+    it("rejects a string that is not JSON", () => {
+        expect(() => runStep("json", "{oops", [])).toThrow();
+    });
+
+    it("decodes a JWT into header and payload", () => {
+        const header = Buffer.from('{"alg":"HS256","typ":"JWT"}').toString("base64url");
+        const payload = Buffer.from('{"sub":"1234","admin":true}').toString("base64url");
+        const token = `${header}.${payload}.c2lnbmF0dXJl`;
+
+        expect(runStep("jwt", token, [])).toEqual({
+            header: {alg: "HS256", typ: "JWT"},
+            payload: {sub: "1234", admin: true},
+        });
+    });
+
+    it("rejects a token without three segments", () => {
+        expect(() => runStep("jwt", "abc.def", [])).toThrow();
+    });
+
+    it("rejects a token whose payload is not JSON", () => {
+        const header = Buffer.from('{"alg":"none"}').toString("base64url");
+        const bad = Buffer.from("not json").toString("base64url");
+        expect(() => runStep("jwt", `${header}.${bad}.x`, [])).toThrow();
+    });
+});
+
 describe("registry", () => {
     it("rejects an unknown step", () => {
         expect(() => runStep("nope", "x", [])).toThrow(/unknown step/i);

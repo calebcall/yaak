@@ -249,6 +249,16 @@ function decodeStrict(value: unknown, encoding: "base64" | "base64url" | "hex"):
     return decoded;
 }
 
+/** JSON.parse throws a raw SyntaxError; wrap it so a malformed payload never
+ * escapes as anything but a StepError, and so the message names what failed. */
+function parseJson(text: string, what: string): unknown {
+    try {
+        return JSON.parse(text);
+    } catch {
+        throw new StepError(`not valid JSON in ${what}`);
+    }
+}
+
 export const STEPS: Record<string, Step> = {
     // ---- numeric base ----
     "hex>dec": {arity: 0, run: (v) => parseRadix(v, 16, "0x", /^[0-9a-f]+$/)},
@@ -352,6 +362,43 @@ export const STEPS: Record<string, Step> = {
             } catch {
                 throw new StepError(`not valid text for url encoding: ${String(v)}`);
             }
+        },
+    },
+
+    // ---- structured ----
+    // JSON.parse accepts a top-level scalar ("42", "true", "null") as well as
+    // an object or array; that's spec-legal JSON and the DSL's own wording
+    // ("parse embedded JSON string") doesn't say the result must be a
+    // container, so a bare scalar is returned as-is rather than rejected.
+    json: {arity: 0, run: (v) => parseJson(toText(v), "value")},
+    // jwt decodes only -- it does not, and must not, verify the signature.
+    // That is a deliberate non-goal (documented in the README), not an
+    // oversight: this plugin has no key material and no way to know which
+    // algorithm a caller trusts, so silently accepting or rejecting based on
+    // `alg` (including "none") would be worse than not checking at all.
+    jwt: {
+        arity: 0,
+        run: (v) => {
+            const text = toText(v);
+            // A JWT (JWS compact serialization) is always exactly three
+            // dot-separated segments. A JWE (encrypted, not signed) uses
+            // five and is a structurally different token; both too few and
+            // too many segments are rejected here, not just "fewer than 3".
+            const segments = text.split(".");
+            if (segments.length !== 3) {
+                throw new StepError(`not a JWT: expected 3 segments, got ${segments.length}`);
+            }
+            // segments[0]/[1] are typed string|undefined under
+            // noUncheckedIndexedAccess even though the length check above
+            // guarantees they exist; decodeStrict takes `unknown` and
+            // rejects a non-string (including undefined) with StepError, so
+            // no assertion is needed and no unreachable case slips through
+            // silently. An empty segment (e.g. from "..") decodes to an
+            // empty string here, which then fails parseJson below rather
+            // than producing a silently-empty header/payload.
+            const header = parseJson(decodeStrict(segments[0], "base64url"), "JWT header");
+            const payload = parseJson(decodeStrict(segments[1], "base64url"), "JWT payload");
+            return {header, payload};
         },
     },
 };
