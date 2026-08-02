@@ -317,6 +317,136 @@ describe("time", () => {
     });
 });
 
+describe("encoding", () => {
+    it("round-trips base64", () => {
+        expect(runStep("base64", "SGVsbG8sIHdvcmxk", [])).toBe("Hello, world");
+        expect(runStep("text>base64", "Hello, world", [])).toBe("SGVsbG8sIHdvcmxk");
+    });
+
+    it("round-trips base64url without padding", () => {
+        const encoded = runStep("text>base64url", "a+b/c?", []);
+        expect(encoded).not.toContain("+");
+        expect(encoded).not.toContain("/");
+        expect(encoded).not.toContain("=");
+        expect(runStep("base64url", encoded, [])).toBe("a+b/c?");
+    });
+
+    it("round-trips url encoding", () => {
+        expect(runStep("urlenc", "a%20b%26c", [])).toBe("a b&c");
+        expect(runStep("text>urlenc", "a b&c", [])).toBe("a%20b%26c");
+    });
+
+    it("round-trips hex bytes, which is not hex>dec", () => {
+        expect(runStep("hexbytes", "0x48656c6c6f", [])).toBe("Hello");
+        expect(runStep("text>hexbytes", "Hello", [])).toBe("0x48656c6c6f");
+    });
+
+    it("rejects invalid input", () => {
+        expect(() => runStep("hexbytes", "zz", [])).toThrow();
+        expect(() => runStep("urlenc", "%zz", [])).toThrow();
+        expect(() => runStep("base64", 42, [])).toThrow();
+    });
+
+    it("rejects a base64url string outside the alphabet", () => {
+        expect(() => runStep("base64url", "not valid!", [])).toThrow(StepError);
+    });
+
+    it("rejects a non-string for every text>x encode step", () => {
+        expect(() => runStep("text>base64", 42, [])).toThrow(StepError);
+        expect(() => runStep("text>base64url", 42, [])).toThrow(StepError);
+        expect(() => runStep("text>hexbytes", 42, [])).toThrow(StepError);
+        expect(() => runStep("text>urlenc", 42, [])).toThrow(StepError);
+    });
+
+    describe("base64 padding", () => {
+        // "QQ" is one byte's worth of base64 (6 bits short of a full group);
+        // both the fully-padded canonical form and the unpadded form are
+        // legitimate ways to write that, and both decode to "A".
+        it("accepts fully padded and fully unpadded base64", () => {
+            expect(runStep("base64", "QQ==", [])).toBe("A");
+            expect(runStep("base64", "QQ", [])).toBe("A");
+        });
+
+        // "QQ=" has neither the two padding characters a fully padded
+        // encoding requires nor the absence of padding an unpadded one
+        // requires -- Buffer.from decodes it anyway (leniently treating it
+        // as "QQ"), but that leniency is exactly the kind of silent
+        // correction this plugin must not perform, so it is rejected.
+        it("rejects a single stray padding character", () => {
+            expect(() => runStep("base64", "QQ=", [])).toThrow(StepError);
+        });
+    });
+
+    describe("junk that Buffer.from would otherwise ignore", () => {
+        // Buffer.from("base64") silently skips embedded whitespace, which
+        // would otherwise make a base64 payload with an accidental newline
+        // (or one deliberately line-wrapped, e.g. PEM-style) decode to a
+        // value that doesn't reflect the literal input; rejecting it is the
+        // deliberate, always-safe choice.
+        it("rejects base64 with an embedded newline", () => {
+            expect(() => runStep("base64", "SGVsbG8sIHdvcmxk\n", [])).toThrow(StepError);
+        });
+
+        it("rejects base64 with an embedded space", () => {
+            expect(() => runStep("base64", "SGVs bG8s IHdv cmxk", [])).toThrow(StepError);
+        });
+
+        it("rejects base64 with trailing non-alphabet junk", () => {
+            expect(() => runStep("base64", "SGVsbG8sIHdvcmxk!!!", [])).toThrow(StepError);
+        });
+    });
+
+    describe("hex byte-string shape", () => {
+        it("rejects an odd number of hex digits instead of truncating", () => {
+            // Buffer.from("abc", "hex") silently truncates to one byte
+            // (0xab) instead of failing; the round-trip check must catch it.
+            expect(() => runStep("hexbytes", "abc", [])).toThrow(StepError);
+        });
+    });
+
+    describe("utf-8 validity", () => {
+        // Buffer#toString("utf8") never fails: bytes that aren't valid UTF-8
+        // are silently replaced with U+FFFD. Handing that back would be a
+        // silently-wrong value, so decoding bytes that aren't valid text
+        // must be rejected instead.
+        it("rejects hex bytes that don't form valid utf-8 text", () => {
+            expect(() => runStep("hexbytes", "0xff", [])).toThrow(StepError);
+        });
+
+        it("rejects base64 that decodes to bytes that aren't valid utf-8 text", () => {
+            expect(() => runStep("base64", "/w==", [])).toThrow(StepError);
+        });
+    });
+
+    describe("non-ASCII round-trips", () => {
+        const samples = ["café, naïve, résumé", "😀 emoji test 🎉"];
+
+        it("round-trips non-ASCII text through base64", () => {
+            for (const s of samples) {
+                expect(runStep("base64", runStep("text>base64", s, []), [])).toBe(s);
+            }
+        });
+
+        it("round-trips non-ASCII text through base64url", () => {
+            for (const s of samples) {
+                expect(runStep("base64url", runStep("text>base64url", s, []), [])).toBe(s);
+            }
+        });
+
+        it("round-trips non-ASCII text through hexbytes", () => {
+            for (const s of samples) {
+                expect(runStep("hexbytes", runStep("text>hexbytes", s, []), [])).toBe(s);
+            }
+        });
+
+        it("round-trips non-ASCII text through urlenc", () => {
+            for (const s of samples) {
+                expect(runStep("urlenc", runStep("text>urlenc", s, []), [])).toBe(s);
+            }
+        });
+    });
+});
+
 describe("registry", () => {
     it("rejects an unknown step", () => {
         expect(() => runStep("nope", "x", [])).toThrow(/unknown step/i);

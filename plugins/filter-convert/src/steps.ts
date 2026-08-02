@@ -185,6 +185,51 @@ const DURATION_UNITS: Array<[label: string, ms: bigint]> = [
     ["s", 1000n],
 ];
 
+function toText(value: unknown): string {
+    if (typeof value !== "string") throw new StepError(`not a string: ${String(value)}`);
+    return value;
+}
+
+/** Buffer.from tolerates malformed padding ("QQ=" decodes the same as "QQ=="
+ * or "QQ") and silently drops whitespace/newlines and non-alphabet junk
+ * instead of failing on them. Locking the shape down to exactly two
+ * legitimate forms -- fully padded, or fully unpadded -- rejects that
+ * garbage before it ever reaches Buffer.from, while still accepting either
+ * padding convention as a genuine encoding. */
+const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}(?:==)?|[A-Za-z0-9+/]{3}=?)?$/;
+const BASE64URL_PATTERN = /^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-]{2}(?:==)?|[A-Za-z0-9_-]{3}=?)?$/;
+
+/** Buffer.from is lenient about junk; round-trip to prove the input was really valid. */
+function decodeStrict(value: unknown, encoding: "base64" | "base64url" | "hex"): string {
+    const text = toText(value);
+    const stripped = text.toLowerCase().startsWith("0x") && encoding === "hex" ? text.slice(2) : text;
+    // Buffer.toString("hex") is always lowercase, so normalise before round-tripping
+    const body = encoding === "hex" ? stripped.toLowerCase() : stripped;
+
+    const pattern = encoding === "base64" ? BASE64_PATTERN : encoding === "base64url" ? BASE64URL_PATTERN : null;
+    if (pattern != null && !pattern.test(body)) {
+        throw new StepError(`not valid ${encoding}: ${text}`);
+    }
+
+    const buffer = Buffer.from(body, encoding);
+    if (buffer.toString(encoding).replace(/=+$/, "") !== body.replace(/=+$/, "")) {
+        throw new StepError(`not valid ${encoding}: ${text}`);
+    }
+
+    // Buffer#toString("utf8") silently substitutes U+FFFD for bytes that
+    // aren't valid UTF-8 rather than failing, which would otherwise make
+    // this plugin hand back a value that looks plausible but isn't what the
+    // bytes actually contained. Re-encoding the decoded text and comparing
+    // against the original bytes catches that: a genuine U+FFFD present in
+    // the source round-trips back to itself, but a replacement introduced
+    // to paper over invalid bytes does not.
+    const decoded = buffer.toString("utf8");
+    if (!Buffer.from(decoded, "utf8").equals(buffer)) {
+        throw new StepError(`decoded ${encoding} is not valid utf-8 text: ${text}`);
+    }
+    return decoded;
+}
+
 export const STEPS: Record<string, Step> = {
     // ---- numeric base ----
     "hex>dec": {arity: 0, run: (v) => parseRadix(v, 16, "0x", /^[0-9a-f]+$/)},
@@ -249,6 +294,25 @@ export const STEPS: Record<string, Step> = {
             return parts.join(" ");
         },
     },
+
+    // ---- encoding; bare names decode, text>x encodes ----
+    base64: {arity: 0, run: (v) => decodeStrict(v, "base64")},
+    base64url: {arity: 0, run: (v) => decodeStrict(v, "base64url")},
+    hexbytes: {arity: 0, run: (v) => decodeStrict(v, "hex")},
+    urlenc: {
+        arity: 0,
+        run: (v) => {
+            try {
+                return decodeURIComponent(toText(v));
+            } catch {
+                throw new StepError(`not valid url encoding: ${String(v)}`);
+            }
+        },
+    },
+    "text>base64": {arity: 0, run: (v) => Buffer.from(toText(v), "utf8").toString("base64")},
+    "text>base64url": {arity: 0, run: (v) => Buffer.from(toText(v), "utf8").toString("base64url")},
+    "text>hexbytes": {arity: 0, run: (v) => `0x${Buffer.from(toText(v), "utf8").toString("hex")}`},
+    "text>urlenc": {arity: 0, run: (v) => encodeURIComponent(toText(v))},
 };
 
 export function runStep(name: string, value: unknown, args: string[]): unknown {
