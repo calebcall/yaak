@@ -49,11 +49,17 @@ export async function convertResponse(
     const rulesText = typeof values?.rules === "string" ? values.rules : null;
     if (rulesText == null) return; // cancelled
 
-    // A blank submission is deliberately treated as a no-op, not an error: the
-    // user opened the dialog and confirmed without entering anything. There is
-    // nothing to convert and nothing worth toasting about, and — importantly —
-    // nothing worth overwriting a previously-saved good rule with.
-    if (rulesText.trim() === "") return;
+    // A deliberate blank submission is an explicit CLEAR, not a silent no-op.
+    // Without this, once any rule (good or broken) is saved for a request,
+    // there would be no path back to "no saved rule" -- clearing the box and
+    // confirming would do nothing, and the stale value would keep reappearing
+    // on every future run. Acknowledge it with a toast so it isn't mistaken
+    // for the dialog swallowing the input.
+    if (rulesText.trim() === "") {
+        await ctx.store.delete(storeKey(httpRequest.id));
+        await ctx.toast.show({color: "info", message: "Cleared the saved rules for this request"});
+        return;
+    }
 
     // Persist the raw text before it is validated at all. If parsing or
     // conversion fails below, the *typed* text (not the last-good save) is
@@ -61,7 +67,14 @@ export async function convertResponse(
     // attempt rather than retyping it from scratch.
     await ctx.store.set(storeKey(httpRequest.id), rulesText);
 
-    const body = deps.readBody(bodyPath).replace(BOM, "");
+    let body: string;
+    try {
+        body = deps.readBody(bodyPath);
+    } catch {
+        await ctx.toast.show({color: "danger", message: "Could not read the response body"});
+        return;
+    }
+    body = body.replace(BOM, "");
 
     let root: unknown;
     try {
