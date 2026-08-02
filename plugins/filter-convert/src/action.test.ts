@@ -1,6 +1,7 @@
 import type {Context, HttpRequest} from "@yaakapp/api";
 import {describe, expect, it} from "vitest";
 import {convertResponse} from "./action";
+import {STEPS} from "./steps";
 
 const REQUEST = {id: "rq_1", name: "block", url: "https://x"} as HttpRequest;
 const RPC = JSON.stringify({jsonrpc: "2.0", id: 83, result: "0x1879687"});
@@ -13,7 +14,21 @@ const RPC = JSON.stringify({jsonrpc: "2.0", id: 83, result: "0x1879687"});
  */
 function harness(options: {
     body?: string | null;
+    /**
+     * Simulates the user editing the rules field to this text (Yaak's
+     * `DynamicForm` fires `onChange`, so the returned `values.rules` is this
+     * string, even `""`). `null` simulates a genuine cancel (Yaak resolves
+     * `null` on cancel, backdrop click, or escape).
+     */
     rules?: string | null;
+    /**
+     * Simulates confirming the dialog WITHOUT touching the rules field. Real
+     * Yaak's prompt value state starts as `{}` and is only ever populated by
+     * `onChange`, so an unedited field is simply absent from `values` --
+     * `values.rules` is `undefined`, not the `defaultValue` it was rendered
+     * with. Takes priority over `rules` when set.
+     */
+    unedited?: boolean;
     saved?: string;
 } = {}) {
     const calls = {
@@ -56,7 +71,9 @@ function harness(options: {
                 // input they carry, not by call order -- a test may drive
                 // `convertResponse` more than once against the same harness.
                 if (inputs.some((i) => i.name === "rules")) {
-                    return options.rules === null ? null : {rules: options.rules ?? "$.result | hex>dec"};
+                    if (options.rules === null) return null; // cancelled
+                    if (options.unedited) return {}; // confirmed without touching the field
+                    return {rules: options.rules ?? "$.result | hex>dec"};
                 }
                 const input = inputs.find((i) => i.name === "result");
                 calls.shownResult = input?.defaultValue ?? null;
@@ -96,6 +113,17 @@ describe("convertResponse", () => {
         expect(first.find((i) => i.name === "rules")?.defaultValue).toBe("$.saved | hex>dec");
     });
 
+    it("shows a step reference covering every registered step", async () => {
+        const h = harness();
+        await convertResponse(h.ctx, REQUEST, h.deps);
+        const first = h.calls.formInputs[0] as Array<{type?: string; content?: string}>;
+        const reference = first.find((i) => i.type === "markdown");
+        expect(reference?.content).toBeTruthy();
+        for (const name of Object.keys(STEPS)) {
+            expect(reference!.content).toContain(name);
+        }
+    });
+
     it("offers the rules editor with JSON-free plain text and a gutter", async () => {
         const h = harness();
         await convertResponse(h.ctx, REQUEST, h.deps);
@@ -111,6 +139,27 @@ describe("convertResponse", () => {
         await convertResponse(h.ctx, REQUEST, h.deps);
         expect(h.calls.shownResult).toBeNull();
         expect(h.calls.stored).toEqual({});
+        expect(h.calls.deleted).toEqual([]); // a genuine cancel must not touch the store at all
+    });
+
+    // Yaak's real prompt value state starts as `{}` and is only populated by
+    // `onChange`, so confirming a prefilled field without editing it returns
+    // `values` with no `rules` key at all -- not the prefilled string. This
+    // must fall back to the prefilled (saved) rules and still run the
+    // conversion, not be treated as a cancel.
+    it("runs the conversion using the prefilled rules when confirmed without editing", async () => {
+        const h = harness({saved: "$.result | hex>dec", unedited: true});
+        await convertResponse(h.ctx, REQUEST, h.deps);
+        expect(JSON.parse(h.calls.shownResult!)).toEqual({jsonrpc: "2.0", id: 83, result: 25663111});
+    });
+
+    it("clears a previously saved rule when the submission is actively emptied", async () => {
+        const h = harness({saved: "$.saved | hex>dec", rules: ""});
+        await convertResponse(h.ctx, REQUEST, h.deps);
+        expect(h.calls.deleted).toEqual(["rules:rq_1"]);
+        expect(h.calls.toasts.some((t) => /cleared/i.test(t.message))).toBe(true);
+        expect(h.calls.stored).toEqual({}); // no save attempted
+        expect(h.calls.shownResult).toBeNull(); // no conversion attempted
     });
 
     it("clears a previously saved rule when the submission is blank", async () => {
@@ -126,6 +175,16 @@ describe("convertResponse", () => {
         const h = harness({rules: "   "});
         await expect(convertResponse(h.ctx, REQUEST, h.deps)).resolves.toBeUndefined();
         expect(h.calls.deleted).toEqual(["rules:rq_1"]);
+        expect(h.calls.shownResult).toBeNull();
+    });
+
+    it("gives an honest message when nothing was saved and nothing was typed", async () => {
+        const h = harness({unedited: true}); // no `saved` -> the field was prefilled empty
+        await convertResponse(h.ctx, REQUEST, h.deps);
+        expect(h.calls.toasts.some((t) => /no rules entered/i.test(t.message))).toBe(true);
+        expect(h.calls.toasts.some((t) => /cleared/i.test(t.message))).toBe(false);
+        expect(h.calls.deleted).toEqual([]);
+        expect(h.calls.stored).toEqual({});
         expect(h.calls.shownResult).toBeNull();
     });
 
