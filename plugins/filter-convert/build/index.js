@@ -2179,6 +2179,58 @@ function parseStep(text, line) {
 const BOM = /^\uFEFF/;
 const storeKey = (requestId) => `rules:${requestId}`;
 const PLACEHOLDER = ["$.result | hex>dec", "$..value | hex>dec | div 1e18"].join("\n");
+/**
+* Groups every step actually registered in `STEPS` into families for the
+* reference card shown above the rules editor, so the list can never drift
+* from what the DSL really supports. Each pattern is checked in order and a
+* step is claimed by the first family it matches; anything left over (e.g. a
+* future step that doesn't fit an existing family) still gets listed under
+* "other" rather than silently vanishing from the reference.
+*/
+const STEP_FAMILIES = [
+	{
+		label: "numeric base",
+		match: (n) => /^(hex|bin|oct|dec)>/.test(n)
+	},
+	{
+		label: "scaling (take an argument)",
+		match: (n) => n === "div" || n === "mul" || n === "fixed"
+	},
+	{
+		label: "time",
+		match: (n) => /(epoch|date|duration)/.test(n)
+	},
+	{
+		label: "encoding",
+		match: (n) => /(base64|hexbytes|urlenc)/.test(n)
+	},
+	{
+		label: "structured",
+		match: (n) => n === "json" || n === "jwt"
+	}
+];
+function buildStepReference() {
+	const remaining = new Set(Object.keys(STEPS));
+	const lines = [];
+	for (const { label, match } of STEP_FAMILIES) {
+		const members = Array.from(remaining).filter(match).sort();
+		if (members.length === 0) continue;
+		members.forEach((n) => remaining.delete(n));
+		lines.push(`- **${label}**: ${members.join(", ")}`);
+	}
+	if (remaining.size > 0) lines.push(`- **other**: ${Array.from(remaining).sort().join(", ")}`);
+	return [
+		"One rule per line: `$.path | step | step`",
+		"",
+		...lines,
+		"",
+		"Examples:",
+		"- `$.result | hex>dec`",
+		"- `$..value | hex>dec | div 1e18`",
+		"- `$.token | jwt`"
+	].join("\n");
+}
+const STEP_REFERENCE = buildStepReference();
 async function convertResponse(ctx, httpRequest, deps) {
 	const response = (await ctx.httpResponse.find({
 		requestId: httpRequest.id,
@@ -2198,6 +2250,9 @@ async function convertResponse(ctx, httpRequest, deps) {
 		title: "Convert response",
 		confirmText: "Convert",
 		inputs: [{
+			type: "markdown",
+			content: STEP_REFERENCE
+		}, {
 			type: "editor",
 			name: "rules",
 			label: "Rules",
@@ -2207,13 +2262,19 @@ async function convertResponse(ctx, httpRequest, deps) {
 			description: "One rule per line: <jsonpath> | <step> | <step>"
 		}]
 	});
-	const rulesText = typeof values?.rules === "string" ? values.rules : null;
-	if (rulesText == null) return;
+	if (values == null) return;
+	const edited = typeof values.rules === "string";
+	const rulesText = edited ? values.rules : saved;
 	if (rulesText.trim() === "") {
-		await ctx.store.delete(storeKey(httpRequest.id));
-		await ctx.toast.show({
-			color: "info",
-			message: "Cleared the saved rules for this request"
+		if (edited) {
+			await ctx.store.delete(storeKey(httpRequest.id));
+			await ctx.toast.show({
+				color: "info",
+				message: "Cleared the saved rules for this request"
+			});
+		} else await ctx.toast.show({
+			color: "warning",
+			message: "No rules entered"
 		});
 		return;
 	}
