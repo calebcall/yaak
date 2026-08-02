@@ -218,9 +218,24 @@ function assertNoLoneSurrogate(text: string): string {
 const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}(?:==)?|[A-Za-z0-9+/]{3}=?)?$/;
 const BASE64URL_PATTERN = /^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-]{2}(?:==)?|[A-Za-z0-9_-]{3}=?)?$/;
 
+/** BASE64_PATTERN/BASE64URL_PATTERN's nested quantifiers make V8 recurse
+ * proportionally to input length; measured empirically, `.test()` throws a
+ * raw RangeError ("Maximum call stack size exceeded") somewhere between
+ * 4,468,750 and 4,476,562 characters. 2,000,000 leaves more than 2x headroom
+ * below that measured breakpoint while comfortably fitting any real base64
+ * payload (a multi-megabyte encoded blob in an API response is normal; a
+ * multi-million-character one is not), and it applies uniformly to hex too
+ * so all four decode-family steps (`base64`, `base64url`, `hexbytes`, and
+ * `jwt`, which decodes its segments through this same function) share one
+ * bound instead of hex being an unbounded exception. */
+const MAX_DECODE_LENGTH = 2_000_000;
+
 /** Buffer.from is lenient about junk; round-trip to prove the input was really valid. */
 function decodeStrict(value: unknown, encoding: "base64" | "base64url" | "hex"): string {
     const text = toText(value);
+    if (text.length > MAX_DECODE_LENGTH) {
+        throw new StepError(`input too large to decode (max ${MAX_DECODE_LENGTH} characters): ${text.length}`);
+    }
     const stripped = text.toLowerCase().startsWith("0x") && encoding === "hex" ? text.slice(2) : text;
     // Buffer.toString("hex") is always lowercase, so normalise before round-tripping
     const body = encoding === "hex" ? stripped.toLowerCase() : stripped;

@@ -464,6 +464,34 @@ describe("encoding", () => {
         });
     });
 
+    describe("decode length bound", () => {
+        // BASE64URL_PATTERN's nested quantifiers make V8's regex engine
+        // recurse proportionally to input length; empirically this throws a
+        // raw RangeError ("Maximum call stack size exceeded") somewhere
+        // between 4,468,750 and 4,476,562 characters. decodeStrict must
+        // reject an oversized input with StepError well before that native
+        // crash is ever reached.
+        const MAX_DECODE_LENGTH = 2_000_000;
+
+        it("rejects an input beyond the maximum decode length as StepError, not a raw RangeError", () => {
+            const oversized = "A".repeat(MAX_DECODE_LENGTH + 1);
+            expect(() => runStep("base64url", oversized, [])).toThrow(StepError);
+        });
+
+        it("still decodes correctly at exactly the maximum bound", () => {
+            // 1,500,000 bytes of ASCII base64url-encodes to exactly
+            // 2,000,000 characters (3 bytes -> 4 chars, no padding needed).
+            const bytes = "A".repeat(1_500_000);
+            const encoded = Buffer.from(bytes, "utf8").toString("base64url");
+            expect(encoded.length).toBe(MAX_DECODE_LENGTH);
+            expect(runStep("base64url", encoded, [])).toBe(bytes);
+        });
+
+        it("leaves ordinary small inputs unaffected", () => {
+            expect(runStep("base64url", "SGVsbG8", [])).toBe("Hello");
+        });
+    });
+
     describe("utf-8 validity", () => {
         // Buffer#toString("utf8") never fails: bytes that aren't valid UTF-8
         // are silently replaced with U+FFFD. Handing that back would be a
@@ -535,6 +563,12 @@ describe("structured", () => {
         const header = Buffer.from('{"alg":"none"}').toString("base64url");
         const bad = Buffer.from("not json").toString("base64url");
         expect(() => runStep("jwt", `${header}.${bad}.x`, [])).toThrow();
+    });
+
+    it("rejects an oversized segment as StepError rather than crashing, since jwt shares decodeStrict's bound", () => {
+        const header = Buffer.from('{"alg":"none"}').toString("base64url");
+        const oversizedPayload = "A".repeat(2_000_001);
+        expect(() => runStep("jwt", `${header}.${oversizedPayload}.x`, [])).toThrow(StepError);
     });
 });
 
