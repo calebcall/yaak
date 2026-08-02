@@ -379,6 +379,45 @@ describe("encoding", () => {
         });
     });
 
+    describe("lone surrogate rejection across all encode steps", () => {
+        // A lone surrogate has no valid UTF-8 encoding of its own. Left
+        // unguarded, text>base64/base64url/hexbytes would silently
+        // substitute U+FFFD (Buffer.from's behaviour) while text>urlenc
+        // would throw a raw URIError -- the same input class producing two
+        // different behaviours across four supposedly-uniform encode steps.
+        // Both are wrong: reject it the same way, everywhere.
+        const LONE_HIGH = String.fromCharCode(0xd800);
+        const LONE_LOW = String.fromCharCode(0xdc00);
+        const ENCODE_STEPS = ["text>base64", "text>base64url", "text>hexbytes", "text>urlenc"] as const;
+
+        it("rejects a lone high surrogate in every encode step", () => {
+            for (const step of ENCODE_STEPS) {
+                expect(() => runStep(step, LONE_HIGH, []), step).toThrow(StepError);
+            }
+        });
+
+        it("rejects a lone low surrogate in every encode step", () => {
+            for (const step of ENCODE_STEPS) {
+                expect(() => runStep(step, LONE_LOW, []), step).toThrow(StepError);
+            }
+        });
+
+        // The guard must not overcorrect: a naive "contains a code unit in
+        // D800-DFFF" check would reject every emoji, since an emoji IS a
+        // valid *paired* surrogate in UTF-16 -- that would fix the rare
+        // case by breaking the common one. CJK, accented Latin, plain
+        // ASCII, and an empty string must likewise sail through untouched.
+        it("still accepts valid surrogate pairs (emoji), CJK, accented, ASCII and empty text", () => {
+            const samples = ["😀", "日本語", "café, naïve, résumé", "Hello, world", ""];
+            for (const s of samples) {
+                expect(runStep("text>base64", s, []), s).toBe(Buffer.from(s, "utf8").toString("base64"));
+                expect(runStep("text>base64url", s, []), s).toBe(Buffer.from(s, "utf8").toString("base64url"));
+                expect(runStep("text>hexbytes", s, []), s).toBe(`0x${Buffer.from(s, "utf8").toString("hex")}`);
+                expect(runStep("text>urlenc", s, []), s).toBe(encodeURIComponent(s));
+            }
+        });
+    });
+
     describe("base64 padding", () => {
         // "QQ" is one byte's worth of base64 (6 bits short of a full group);
         // both the fully-padded canonical form and the unpadded form are

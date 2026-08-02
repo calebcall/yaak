@@ -190,6 +190,25 @@ function toText(value: unknown): string {
     return value;
 }
 
+/** Matches a lone (unpaired) UTF-16 surrogate: a high surrogate (D800-DBFF)
+ * not immediately followed by a low surrogate (DC00-DFFF), or a low
+ * surrogate not immediately preceded by a high one. A *paired* surrogate
+ * (e.g. any emoji) matches neither branch, since each half's lookaround
+ * finds its partner right where it should be. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/** A lone surrogate has no valid UTF-8 encoding of its own; Buffer.from
+ * silently substitutes U+FFFD for it instead of failing, which would
+ * silently corrupt every encode step's output. JSON.parse('"\ud800"') is
+ * valid JSON, so this is realistic input, not a theoretical edge case --
+ * reject it explicitly instead of letting it through. */
+function assertNoLoneSurrogate(text: string): string {
+    if (LONE_SURROGATE.test(text)) {
+        throw new StepError(`text contains an unpaired UTF-16 surrogate: ${text}`);
+    }
+    return text;
+}
+
 /** Buffer.from tolerates malformed padding ("QQ=" decodes the same as "QQ=="
  * or "QQ") and silently drops whitespace/newlines and non-alphabet junk
  * instead of failing on them. Locking the shape down to exactly two
@@ -309,17 +328,27 @@ export const STEPS: Record<string, Step> = {
             }
         },
     },
-    "text>base64": {arity: 0, run: (v) => Buffer.from(toText(v), "utf8").toString("base64")},
-    "text>base64url": {arity: 0, run: (v) => Buffer.from(toText(v), "utf8").toString("base64url")},
-    "text>hexbytes": {arity: 0, run: (v) => `0x${Buffer.from(toText(v), "utf8").toString("hex")}`},
+    "text>base64": {
+        arity: 0,
+        run: (v) => Buffer.from(assertNoLoneSurrogate(toText(v)), "utf8").toString("base64"),
+    },
+    "text>base64url": {
+        arity: 0,
+        run: (v) => Buffer.from(assertNoLoneSurrogate(toText(v)), "utf8").toString("base64url"),
+    },
+    "text>hexbytes": {
+        arity: 0,
+        run: (v) => `0x${Buffer.from(assertNoLoneSurrogate(toText(v)), "utf8").toString("hex")}`,
+    },
     "text>urlenc": {
         arity: 0,
         run: (v) => {
-            // encodeURIComponent throws a native URIError on a lone
-            // surrogate (a realistic input: JSON.parse('"\ud800"') is valid
-            // JSON), which must not escape as anything but a StepError.
+            const text = assertNoLoneSurrogate(toText(v));
+            // encodeURIComponent should never throw now that a lone
+            // surrogate is already rejected above, but the try/catch stays
+            // as a backstop so a raw URIError still can't escape here.
             try {
-                return encodeURIComponent(toText(v));
+                return encodeURIComponent(text);
             } catch {
                 throw new StepError(`not valid text for url encoding: ${String(v)}`);
             }
