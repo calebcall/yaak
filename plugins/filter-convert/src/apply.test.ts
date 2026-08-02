@@ -80,6 +80,58 @@ describe("applyRules", () => {
         const result = run(json, "$.* | hex>dec");
         expect(result.converted).toBe(1);
     });
+
+    it("returns zero matches for a null document with a root selector", () => {
+        const result = run(null, "$ | json");
+        expect(result.value).toBeNull();
+        expect(result.matched).toBe(0);
+        expect(result.converted).toBe(0);
+    });
+
+    it("returns zero matches for a null document with a deeper selector", () => {
+        const result = run(null, "$.a | hex>dec");
+        expect(result.value).toBeNull();
+        expect(result.matched).toBe(0);
+        expect(result.converted).toBe(0);
+    });
+
+    it("returns zero matches for an undefined document with a root selector", () => {
+        const result = run(undefined, "$ | json");
+        expect(result.value).toBeUndefined();
+        expect(result.matched).toBe(0);
+        expect(result.converted).toBe(0);
+    });
+
+    it("returns zero matches for an undefined document with a deeper selector", () => {
+        const result = run(undefined, "$.a | hex>dec");
+        expect(result.value).toBeUndefined();
+        expect(result.matched).toBe(0);
+        expect(result.converted).toBe(0);
+    });
+
+    it("does not crash when an earlier rule legitimately writes a null root", () => {
+        // "$ | json" parses the string "null" into the primitive null and
+        // writes it to the root; the second rule must then see a null
+        // document and report zero matches rather than throwing.
+        const result = run("null", "$ | json\n$.a | div 2");
+        expect(result.value).toBeNull();
+        expect(result.matched).toBe(1);
+        expect(result.converted).toBe(1);
+    });
+
+    it("matched counts every selected node regardless of conversion outcome", () => {
+        const allSucceed = run({a: "0x1", b: "0x2"}, "$..* | hex>dec");
+        expect(allSucceed.matched).toBe(2);
+        expect(allSucceed.converted).toBe(2);
+
+        const allFail = run({a: "x", b: "y"}, "$..* | hex>dec");
+        expect(allFail.matched).toBe(2);
+        expect(allFail.converted).toBe(0);
+
+        const mixed = run({a: "0x1", b: "y"}, "$..* | hex>dec");
+        expect(mixed.matched).toBe(2);
+        expect(mixed.converted).toBe(1);
+    });
 });
 
 describe("serialise", () => {
