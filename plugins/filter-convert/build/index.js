@@ -1582,6 +1582,7 @@ function parseDec(input) {
 		digits: input < 0n ? -input : input,
 		scale: 0
 	};
+	if (typeof input === "number" && Number.isInteger(input) && !Number.isSafeInteger(input)) throw new StepError(`not a safe integer: ${input}`);
 	const text = typeof input === "number" ? String(input) : input;
 	if (typeof text !== "string") throw new StepError(`not a number: ${String(input)}`);
 	const m = DEC_PATTERN.exec(text.trim());
@@ -1636,15 +1637,19 @@ function halfUp(numerator, denominator) {
 	const quotient = numerator / denominator;
 	return numerator % denominator * 2n >= denominator ? quotient + 1n : quotient;
 }
+/** "-0" is not a useful sign: only prefix "-" when the text has a nonzero digit. */
+function withSign(neg, text) {
+	return neg && /[1-9]/.test(text) ? `-${text}` : text;
+}
 function formatDec(d) {
 	let text = withPoint(d.digits, d.scale);
 	if (text.includes(".")) text = text.replace(/0+$/, "").replace(/\.$/, "");
-	return d.neg && /[1-9]/.test(text) ? `-${text}` : text;
+	return withSign(d.neg, text);
 }
 function formatFixed(d, places) {
 	const rounded = roundDec(d, places);
 	const text = withPoint(rounded.digits, places);
-	return rounded.neg && /[1-9]/.test(text) ? `-${text}` : text;
+	return withSign(rounded.neg, text);
 }
 function withPoint(digits, scale) {
 	if (scale === 0) return digits.toString();
@@ -1696,9 +1701,7 @@ function parseRadix(value, radix, prefix, pattern) {
 	}
 	const body = raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
 	if (body.length === 0 || !pattern.test(body)) throw new StepError(`not base-${radix}: ${value}`);
-	let result = 0n;
-	const base = BigInt(radix);
-	for (const ch of body) result = result * base + BigInt(Number.parseInt(ch, radix));
+	const result = BigInt(`${prefix}${body}`);
 	return negative ? -result : result;
 }
 /** Render a BigInt in another base with the sign outside the prefix, e.g.
@@ -1908,7 +1911,7 @@ const STEPS = {
 			if (!/^\d+$/.test(raw)) throw new StepError(`fixed requires a non-negative integer, got: ${String(n)}`);
 			const places = Number.parseInt(raw, 10);
 			if (places > MAX_PLACES) throw new StepError(`fixed places too large (max ${MAX_PLACES}): ${raw}`);
-			return formatFixed(roundDec(parseDec(v), places), places);
+			return formatFixed(parseDec(v), places);
 		}
 	},
 	"epoch_s>date": {
@@ -1959,8 +1962,9 @@ const STEPS = {
 	urlenc: {
 		arity: 0,
 		run: (v) => {
+			const text = toText(v);
 			try {
-				return decodeURIComponent(toText(v));
+				return decodeURIComponent(text);
 			} catch {
 				throw new StepError(`not valid url encoding: ${String(v)}`);
 			}
@@ -2074,7 +2078,7 @@ function serialise(value) {
 *
 * - A pathological selector whose brackets net to zero depth despite being
 *   mismatched (e.g. a stray `)(`) is not caught here -- it is left for
-*   Task 11's jsonpath-plus call to reject at evaluation time.
+*   apply.ts's jsonpath-plus call to reject at evaluation time.
 * - More subtly, a *genuinely balanced* bracket or paren that appears before
 *   the pipe the user actually intended as the selector/step separator will
 *   absorb that pipe too, e.g. `$.a( | hex>dec ) | fixed 2` parses as
@@ -2088,9 +2092,9 @@ function serialise(value) {
 *   `|` is not valid JSONPath outside a filter expression, so a mangled
 *   selector like `$.a( | hex>dec )` is not valid JSONPath either. Rather
 *   than throwing, jsonpath-plus returns an empty match set for it, so
-*   Task 12 reports "No values were converted -- check the selector" --
-*   the user is told to look at the right thing, even though the parser
-*   itself stayed silent.
+*   the action reports "No values matched — check the selector" -- the
+*   user is told to look at the right thing, even though the parser itself
+*   stayed silent.
 *
 * What *is* caught here, because it would otherwise silently swallow the
 * rest of the line (including every step) into the selector with no
@@ -2214,12 +2218,21 @@ const STEP_FAMILIES = [
 * inline (e.g. `div <n>`), derived from the registry's own `arity` rather
 * than a hardcoded list of "which steps take an argument" -- so this stays
 * honest if a step's arity ever changes.
+*
+* Every name is wrapped in backticks so it renders as an inline code span.
+* This is not just cosmetic: Yaak renders this markdown with react-markdown
+* + remark-gfm and no rehype-raw, so a bare `<n>` outside a code span is
+* parsed as an (unrecognised) raw HTML tag and silently dropped -- the
+* arity hint would vanish from the UI entirely, leaving "div , fixed , mul"
+* with a dangling space. Backticks sidestep that for every step, including
+* zero-arity ones, since they read better and stay future-proof if a step's
+* arity ever changes to include a placeholder.
 */
 function formatStepName(name) {
 	const arity = STEPS[name]?.arity ?? 0;
-	if (arity === 0) return name;
-	if (arity === 1) return `${name} <n>`;
-	return `${name} ${Array.from({ length: arity }, (_, i) => `<arg${i + 1}>`).join(" ")}`;
+	if (arity === 0) return `\`${name}\``;
+	if (arity === 1) return `\`${name} <n>\``;
+	return `\`${name} ${Array.from({ length: arity }, (_, i) => `<arg${i + 1}>`).join(" ")}\``;
 }
 /**
 * The GENERATED half of the reference card -- every step in `STEPS`,
@@ -2308,70 +2321,78 @@ async function convertResponse(ctx, httpRequest, deps) {
 		});
 		return;
 	}
-	await ctx.store.set(storeKey(httpRequest.id), rulesText);
-	let body;
 	try {
-		body = deps.readBody(bodyPath);
-	} catch {
-		await ctx.toast.show({
-			color: "danger",
-			message: "Could not read the response body"
-		});
-		return;
-	}
-	body = body.replace(BOM, "");
-	let root;
-	try {
-		root = JSON.parse(body);
-	} catch {
-		await ctx.toast.show({
-			color: "danger",
-			message: "Response is not valid JSON"
-		});
-		return;
-	}
-	let output;
-	let converted;
-	let matched;
-	try {
-		const result = applyRules(root, parseRules(rulesText));
-		output = serialise(result.value);
-		converted = result.converted;
-		matched = result.matched;
-	} catch (err) {
-		if (err instanceof RuleError) {
+		await ctx.store.set(storeKey(httpRequest.id), rulesText);
+		let body;
+		try {
+			body = deps.readBody(bodyPath);
+		} catch {
 			await ctx.toast.show({
 				color: "danger",
-				message: err.message
+				message: "Could not read the response body"
 			});
 			return;
 		}
-		throw err;
-	}
-	if (matched === 0) await ctx.toast.show({
-		color: "warning",
-		message: "No values matched — check the selector"
-	});
-	else if (converted === 0) {
-		const unit = matched === 1 ? "value" : "values";
-		await ctx.toast.show({
+		body = body.replace(BOM, "");
+		let root;
+		try {
+			root = JSON.parse(body);
+		} catch {
+			await ctx.toast.show({
+				color: "danger",
+				message: "Response is not valid JSON"
+			});
+			return;
+		}
+		let output;
+		let converted;
+		let matched;
+		try {
+			const result = applyRules(root, parseRules(rulesText));
+			converted = result.converted;
+			matched = result.matched;
+			output = serialise(result.value);
+		} catch (err) {
+			if (err instanceof RuleError) {
+				await ctx.toast.show({
+					color: "danger",
+					message: err.message
+				});
+				return;
+			}
+			throw err;
+		}
+		if (matched === 0) await ctx.toast.show({
 			color: "warning",
-			message: `Matched ${matched} ${unit} but none could be converted — check the steps`
+			message: "No values matched — check the selector"
+		});
+		else if (converted === 0) {
+			const unit = matched === 1 ? "value" : "values";
+			await ctx.toast.show({
+				color: "warning",
+				message: `Matched ${matched} ${unit} but none could be converted — check the steps`
+			});
+		}
+		await ctx.prompt.form({
+			id: "filter-convert-result",
+			title: "Converted response",
+			confirmText: "Done",
+			inputs: [{
+				type: "editor",
+				name: "result",
+				label: "Result",
+				language: "json",
+				readOnly: true,
+				defaultValue: output
+			}]
+		});
+	} catch (err) {
+		const detail = err instanceof Error ? err.message : String(err);
+		await ctx.toast.show({
+			color: "danger",
+			message: `Could not convert the response: ${detail}`
 		});
 	}
-	await ctx.prompt.form({
-		id: "filter-convert-result",
-		title: "Converted response",
-		confirmText: "Done",
-		inputs: [{
-			type: "editor",
-			name: "result",
-			label: "Result",
-			language: "json",
-			readOnly: true,
-			defaultValue: output
-		}]
-	});
 }
 
 //#endregion

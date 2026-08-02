@@ -2,6 +2,7 @@ import type {Context, HttpRequest} from "@yaakapp/api";
 import {describe, expect, it} from "vitest";
 import {buildStepFamilySections, convertResponse} from "./action";
 import {STEPS} from "./steps";
+import {resolveRulesFormValues} from "./testSupport";
 
 const REQUEST = {id: "rq_1", name: "block", url: "https://x"} as HttpRequest;
 const RPC = JSON.stringify({jsonrpc: "2.0", id: 83, result: "0x1879687"});
@@ -71,9 +72,18 @@ function harness(options: {
                 // input they carry, not by call order -- a test may drive
                 // `convertResponse` more than once against the same harness.
                 if (inputs.some((i) => i.name === "rules")) {
-                    if (options.rules === null) return null; // cancelled
-                    if (options.unedited) return {}; // confirmed without touching the field
-                    return {rules: options.rules ?? "$.result | hex>dec"};
+                    // A cancel always wins outright; otherwise `unedited`
+                    // overrides any provided `rules` string, and an absent
+                    // `rules` with no `unedited` falls back to a sensible
+                    // default so callers that don't care about the exact
+                    // text don't have to spell it out every time.
+                    const effective =
+                        options.rules === null
+                            ? null
+                            : options.unedited
+                              ? undefined
+                              : (options.rules ?? "$.result | hex>dec");
+                    return resolveRulesFormValues({rules: effective});
                 }
                 const input = inputs.find((i) => i.name === "result");
                 calls.shownResult = input?.defaultValue ?? null;
@@ -140,12 +150,28 @@ describe("convertResponse", () => {
 
     it("shows the argument form for steps that take one, derived from arity", () => {
         const sections = buildStepFamilySections();
-        expect(sections).toContain("div <n>");
-        expect(sections).toContain("mul <n>");
-        expect(sections).toContain("fixed <n>");
+        expect(sections).toContain("`div <n>`");
+        expect(sections).toContain("`mul <n>`");
+        expect(sections).toContain("`fixed <n>`");
         // Zero-arity steps stay bare, not `hex>dec <n>`.
-        expect(sections).toContain("hex>dec");
+        expect(sections).toContain("`hex>dec`");
         expect(sections).not.toContain("hex>dec <n>");
+    });
+
+    // Yaak renders this markdown with react-markdown + remark-gfm and no
+    // rehype-raw, so any text shaped like an HTML tag (e.g. a bare "<n>")
+    // that sits OUTSIDE a backtick code span is parsed as raw HTML and
+    // silently dropped from what the user sees -- this is exactly how the
+    // arity hint on `div`, `mul`, and `fixed` used to vanish, leaving "div ,
+    // fixed , mul" with a dangling space. This test simulates that specific
+    // rendering behaviour (strip code spans, since a renderer without
+    // rehype-raw treats their contents as literal text, then check nothing
+    // HTML-tag-shaped survives outside them) rather than merely re-asserting
+    // the raw source string, so it fails the same way the real UI would.
+    it("never leaves an angle-bracket placeholder outside a code span", () => {
+        const sections = buildStepFamilySections();
+        const outsideCodeSpans = sections.replace(/`[^`]*`/g, "");
+        expect(outsideCodeSpans).not.toMatch(/<[a-zA-Z]/);
     });
 
     it("shows worked examples covering the encoding and structured families", async () => {
@@ -157,14 +183,13 @@ describe("convertResponse", () => {
         expect(reference?.content).toMatch(/jwt/);
     });
 
-    it("offers the rules editor with JSON-free plain text and a gutter", async () => {
+    it("offers the rules editor with JSON-free plain text", async () => {
         const h = harness();
         await convertResponse(h.ctx, REQUEST, h.deps);
-        const first = h.calls.formInputs[0] as Array<{name?: string; type?: string; language?: string; hideGutter?: boolean}>;
+        const first = h.calls.formInputs[0] as Array<{name?: string; type?: string; language?: string}>;
         const rules = first.find((i) => i.name === "rules");
         expect(rules?.type).toBe("editor");
         expect(rules?.language).not.toBe("json");
-        expect(rules?.hideGutter).not.toBe(true);
     });
 
     it("does nothing when the dialog is cancelled", async () => {
@@ -295,11 +320,35 @@ describe("convertResponse", () => {
         expect(h.calls.shownResult).toBeNull();
     });
 
-    it("propagates an unexpected exception that isn't from reading the body", async () => {
+    // Previously this propagated the raw exception into the host, which
+    // gives the user nothing but a bare, contextless runtime error. A
+    // plugin should degrade gracefully instead: name what went wrong in a
+    // toast rather than crash the caller. `RuleError` still gets its own
+    // specific message (tested above); this is for everything else.
+    it("toasts instead of throwing on an unexpected exception that isn't from reading the body", async () => {
         const h = harness();
         h.ctx.store.set = async () => {
             throw new Error("store is unavailable");
         };
-        await expect(convertResponse(h.ctx, REQUEST, h.deps)).rejects.toThrow("store is unavailable");
+        await expect(convertResponse(h.ctx, REQUEST, h.deps)).resolves.toBeUndefined();
+        expect(h.calls.toasts.some((t) => t.color === "danger" && /store is unavailable/.test(t.message))).toBe(
+            true,
+        );
+        expect(h.calls.shownResult).toBeNull();
+    });
+
+    // Regression for a real crash: JSON.parse is iterative in V8, but
+    // JSON.stringify recurses, so a body nested a few thousand levels deep
+    // parses fine and then overflows the stack during `serialise` -- even
+    // when the rule's selector matches nothing at all, since the untouched
+    // document still has to be serialised back out. Before the fix this
+    // escaped as a bare, unhandled "Maximum call stack size exceeded" with
+    // no toast at all.
+    it("toasts instead of crashing when serialising an extremely deep structure overflows the stack", async () => {
+        const body = "[".repeat(3000) + '"0x1"' + "]".repeat(3000);
+        const h = harness({body, rules: "$.nope | hex>dec"});
+        await expect(convertResponse(h.ctx, REQUEST, h.deps)).resolves.toBeUndefined();
+        expect(h.calls.toasts.some((t) => t.color === "danger")).toBe(true);
+        expect(h.calls.shownResult).toBeNull();
     });
 });

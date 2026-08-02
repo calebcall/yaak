@@ -18,6 +18,17 @@ export function parseDec(input: unknown): Dec {
     if (typeof input === "bigint") {
         return {neg: input < 0n, digits: input < 0n ? -input : input, scale: 0};
     }
+    // A JS number this large is already float-corrupted before it ever
+    // reaches here: JSON.parse turns `12345678901234567890` into the double
+    // 12345678901234567000, and there is no way to recover the true value
+    // from the number alone. Passing it through would launder that
+    // corruption into a wrong-but-plausible result -- exactly the failure
+    // steps.ts's `toInteger` already guards against for the numeric-base
+    // family. A genuinely fractional double (e.g. 1.5) is never an unsafe
+    // integer, so it is unaffected by this check.
+    if (typeof input === "number" && Number.isInteger(input) && !Number.isSafeInteger(input)) {
+        throw new StepError(`not a safe integer: ${input}`);
+    }
     const text = typeof input === "number" ? String(input) : input;
     if (typeof text !== "string") throw new StepError(`not a number: ${String(input)}`);
 
@@ -68,16 +79,21 @@ function halfUp(numerator: bigint, denominator: bigint): bigint {
     return remainder * 2n >= denominator ? quotient + 1n : quotient;
 }
 
+/** "-0" is not a useful sign: only prefix "-" when the text has a nonzero digit. */
+function withSign(neg: boolean, text: string): string {
+    return neg && /[1-9]/.test(text) ? `-${text}` : text;
+}
+
 export function formatDec(d: Dec): string {
     let text = withPoint(d.digits, d.scale);
     if (text.includes(".")) text = text.replace(/0+$/, "").replace(/\.$/, "");
-    return d.neg && /[1-9]/.test(text) ? `-${text}` : text;
+    return withSign(d.neg, text);
 }
 
 export function formatFixed(d: Dec, places: number): string {
     const rounded = roundDec(d, places);
     const text = withPoint(rounded.digits, places);
-    return rounded.neg && /[1-9]/.test(text) ? `-${text}` : text;
+    return withSign(rounded.neg, text);
 }
 
 function withPoint(digits: bigint, scale: number): string {

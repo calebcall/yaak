@@ -34,6 +34,36 @@ describe("parseDec", () => {
     });
 });
 
+describe("parseDec with a JS number input", () => {
+    // JSON.parse turns a huge integer literal into an already-corrupted
+    // double (e.g. 12345678901234567890 -> 12345678901234567000). Passing
+    // that number through unchanged would launder the corruption into a
+    // wrong-but-plausible result -- exactly what steps.ts's `toInteger`
+    // already rejects for the numeric-base family. `parseDec` must reject
+    // it the same way, since the scaling family (`div`/`mul`/`fixed`) is the
+    // one output shape the README says exists specifically to preserve
+    // exactness.
+    it("rejects an unsafe-integer number", () => {
+        expect(() => parseDec(12345678901234567890)).toThrow(StepError);
+    });
+
+    it("still accepts a safe-integer number", () => {
+        expect(formatDec(parseDec(42))).toBe("42");
+    });
+
+    it("still accepts a fractional number of any reasonable size", () => {
+        expect(formatDec(parseDec(1.5))).toBe("1.5");
+    });
+
+    it("still accepts the same magnitude as a string, at full precision", () => {
+        expect(formatDec(parseDec("12345678901234567890"))).toBe("12345678901234567890");
+    });
+
+    it("still accepts the same magnitude as a bigint, at full precision", () => {
+        expect(formatDec(parseDec(12345678901234567890n))).toBe("12345678901234567890");
+    });
+});
+
 describe("divDec", () => {
     it("divides one ether of wei down to a whole number", () => {
         expect(formatDec(divDec(d("1000000000000000000"), d("1e18")))).toBe("1");

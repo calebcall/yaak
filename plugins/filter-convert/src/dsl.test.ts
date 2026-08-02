@@ -119,10 +119,10 @@ describe("parseRules", () => {
     // JSONPath validation is out of scope for a pipe-splitter. This is safe
     // rather than silently wrong: `|` is not valid JSONPath outside a filter
     // expression, so jsonpath-plus returns an empty match set for the
-    // mangled selector (rather than throwing), and Task 12 reports "No
-    // values were converted -- check the selector". If this test's expected
-    // output ever changes, it means splitTopLevel's behavior changed and
-    // this documented boundary needs to be re-reviewed, not just updated.
+    // mangled selector (rather than throwing), and the action reports "No
+    // values matched — check the selector". If this test's expected output
+    // ever changes, it means splitTopLevel's behavior changed and this
+    // documented boundary needs to be re-reviewed, not just updated.
     it("documents a known limitation: a balanced paren before the intended separator absorbs that pipe", () => {
         const rules = parseRules("$.a( | hex>dec ) | fixed 2");
         expect(rules[0]?.selector).toBe("$.a( | hex>dec )");

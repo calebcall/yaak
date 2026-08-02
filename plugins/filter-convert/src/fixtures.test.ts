@@ -1,6 +1,7 @@
 import type {Context, HttpRequest} from "@yaakapp/api";
 import {describe, expect, it} from "vitest";
 import {convertResponse} from "./action";
+import {resolveRulesFormValues} from "./testSupport";
 
 /**
  * Drives the real action end-to-end (dsl -> apply -> steps -> serialise) with a
@@ -19,7 +20,10 @@ async function call(payload: unknown, rules: string): Promise<string> {
         prompt: {
             text: async () => null,
             form: async (args: {inputs: Array<{name?: string; defaultValue?: string}>}) => {
-                if (args.inputs.some((i) => i.name === "rules")) return {rules};
+                // Shares action.test.ts's model of what the rules dialog
+                // resolves to (see testSupport.ts) rather than maintaining a
+                // second, independent fake of the same interface.
+                if (args.inputs.some((i) => i.name === "rules")) return resolveRulesFormValues({rules});
                 shown = args.inputs.find((i) => i.name === "result")?.defaultValue ?? "";
                 return {};
             },

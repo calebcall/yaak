@@ -18,6 +18,26 @@ describe("hex>dec", () => {
     it("rejects a non-hex string", () => {
         expect(() => runStep("hex>dec", "hello", [])).toThrow();
     });
+
+    it("keeps a value with leading zeros exact", () => {
+        expect(runStep("hex>dec", "0x00ff", [])).toBe(255n);
+    });
+
+    it("is case-insensitive", () => {
+        expect(runStep("hex>dec", "0xFF", [])).toBe(255n);
+        expect(runStep("hex>dec", "0xAbCd", [])).toBe(runStep("hex>dec", "0xabcd", []));
+    });
+
+    // Regression: parseRadix used to accumulate the result one character at
+    // a time (result = result * base + digit), which is quadratic in the
+    // input length -- 400k characters took ~11s. Replacing it with
+    // BigInt("0x" + body) must not change any answer, only how fast it's
+    // computed; this pins the large-input case at a size that would have
+    // been clearly, visibly slow under the old loop.
+    it("handles a very large input the same as a small one, just faster", () => {
+        const digits = "1".repeat(100_000);
+        expect(runStep("hex>dec", `0x${digits}`, [])).toBe(BigInt(`0x${digits}`));
+    });
 });
 
 describe("dec>hex", () => {
@@ -194,6 +214,16 @@ describe("scaling", () => {
     it("rejects an absurdly large places argument without crashing", () => {
         expect(() => runStep("fixed", "1.5", ["999999999999999999999999999999"]))
             .toThrow(StepError);
+    });
+
+    // Regression: a JSON number beyond MAX_SAFE_INTEGER is already
+    // float-corrupted by the time it reaches here (JSON.parse turns
+    // 12345678901234567890 into 12345678901234567000). `div`/`mul`/`fixed`
+    // used to pass it straight through parseDec and re-emit the corrupted
+    // value as a string -- the one output shape meant to guarantee
+    // exactness. It must now fail closed like `dec>hex` already does.
+    it("rejects a float-corrupted JSON integer rather than laundering it", () => {
+        expect(() => runStep("div", 12345678901234567890, ["1"])).toThrow(StepError);
     });
 });
 

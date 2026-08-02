@@ -17,7 +17,7 @@ export type Rule = {selector: string; steps: ParsedStep[]};
  *
  * - A pathological selector whose brackets net to zero depth despite being
  *   mismatched (e.g. a stray `)(`) is not caught here -- it is left for
- *   Task 11's jsonpath-plus call to reject at evaluation time.
+ *   apply.ts's jsonpath-plus call to reject at evaluation time.
  * - More subtly, a *genuinely balanced* bracket or paren that appears before
  *   the pipe the user actually intended as the selector/step separator will
  *   absorb that pipe too, e.g. `$.a( | hex>dec ) | fixed 2` parses as
@@ -31,9 +31,9 @@ export type Rule = {selector: string; steps: ParsedStep[]};
  *   `|` is not valid JSONPath outside a filter expression, so a mangled
  *   selector like `$.a( | hex>dec )` is not valid JSONPath either. Rather
  *   than throwing, jsonpath-plus returns an empty match set for it, so
- *   Task 12 reports "No values were converted -- check the selector" --
- *   the user is told to look at the right thing, even though the parser
- *   itself stayed silent.
+ *   the action reports "No values matched — check the selector" -- the
+ *   user is told to look at the right thing, even though the parser itself
+ *   stayed silent.
  *
  * What *is* caught here, because it would otherwise silently swallow the
  * rest of the line (including every step) into the selector with no

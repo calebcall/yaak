@@ -36,13 +36,22 @@ const STEP_FAMILIES: Array<{label: string; match: (name: string) => boolean}> = 
  * inline (e.g. `div <n>`), derived from the registry's own `arity` rather
  * than a hardcoded list of "which steps take an argument" -- so this stays
  * honest if a step's arity ever changes.
+ *
+ * Every name is wrapped in backticks so it renders as an inline code span.
+ * This is not just cosmetic: Yaak renders this markdown with react-markdown
+ * + remark-gfm and no rehype-raw, so a bare `<n>` outside a code span is
+ * parsed as an (unrecognised) raw HTML tag and silently dropped -- the
+ * arity hint would vanish from the UI entirely, leaving "div , fixed , mul"
+ * with a dangling space. Backticks sidestep that for every step, including
+ * zero-arity ones, since they read better and stay future-proof if a step's
+ * arity ever changes to include a placeholder.
  */
 function formatStepName(name: string): string {
     const arity = STEPS[name]?.arity ?? 0;
-    if (arity === 0) return name;
-    if (arity === 1) return `${name} <n>`;
+    if (arity === 0) return `\`${name}\``;
+    if (arity === 1) return `\`${name} <n>\``;
     const args = Array.from({length: arity}, (_, i) => `<arg${i + 1}>`);
-    return `${name} ${args.join(" ")}`;
+    return `\`${name} ${args.join(" ")}\``;
 }
 
 /**
@@ -166,64 +175,78 @@ export async function convertResponse(
     // conversion fails below, the *typed* text (not the last-good save) is
     // what the editor prefills next time, so the user is fixing their last
     // attempt rather than retyping it from scratch.
-    await ctx.store.set(storeKey(httpRequest.id), rulesText);
-
-    let body: string;
+    //
+    // Everything from here on is wrapped in one outer try/catch. `RuleError`
+    // still gets its own specific, actionable message below, but ANY other
+    // unexpected exception -- a raw RangeError from `serialise` overflowing
+    // the stack on a pathologically deep body, a store/host call failing,
+    // whatever -- must still end in a toast, not an exception thrown into
+    // the host. A plugin that throws past this boundary gives the user a
+    // bare, contextless runtime error; a toast can at least name what went
+    // wrong.
     try {
-        body = deps.readBody(bodyPath);
-    } catch {
-        await ctx.toast.show({color: "danger", message: "Could not read the response body"});
-        return;
-    }
-    body = body.replace(BOM, "");
+        await ctx.store.set(storeKey(httpRequest.id), rulesText);
 
-    let root: unknown;
-    try {
-        root = JSON.parse(body);
-    } catch {
-        await ctx.toast.show({color: "danger", message: "Response is not valid JSON"});
-        return;
-    }
-
-    let output: string;
-    let converted: number;
-    let matched: number;
-    try {
-        const result = applyRules(root, parseRules(rulesText));
-        output = serialise(result.value);
-        converted = result.converted;
-        matched = result.matched;
-    } catch (err) {
-        if (err instanceof RuleError) {
-            await ctx.toast.show({color: "danger", message: err.message});
+        let body: string;
+        try {
+            body = deps.readBody(bodyPath);
+        } catch {
+            await ctx.toast.show({color: "danger", message: "Could not read the response body"});
             return;
         }
-        throw err;
-    }
+        body = body.replace(BOM, "");
 
-    if (matched === 0) {
-        await ctx.toast.show({color: "warning", message: "No values matched — check the selector"});
-    } else if (converted === 0) {
-        const unit = matched === 1 ? "value" : "values";
-        await ctx.toast.show({
-            color: "warning",
-            message: `Matched ${matched} ${unit} but none could be converted — check the steps`,
+        let root: unknown;
+        try {
+            root = JSON.parse(body);
+        } catch {
+            await ctx.toast.show({color: "danger", message: "Response is not valid JSON"});
+            return;
+        }
+
+        let output: string;
+        let converted: number;
+        let matched: number;
+        try {
+            const result = applyRules(root, parseRules(rulesText));
+            converted = result.converted;
+            matched = result.matched;
+            output = serialise(result.value);
+        } catch (err) {
+            if (err instanceof RuleError) {
+                await ctx.toast.show({color: "danger", message: err.message});
+                return;
+            }
+            throw err; // handled by the outer catch below
+        }
+
+        if (matched === 0) {
+            await ctx.toast.show({color: "warning", message: "No values matched — check the selector"});
+        } else if (converted === 0) {
+            const unit = matched === 1 ? "value" : "values";
+            await ctx.toast.show({
+                color: "warning",
+                message: `Matched ${matched} ${unit} but none could be converted — check the steps`,
+            });
+        }
+
+        await ctx.prompt.form({
+            id: "filter-convert-result",
+            title: "Converted response",
+            confirmText: "Done",
+            inputs: [
+                {
+                    type: "editor",
+                    name: "result",
+                    label: "Result",
+                    language: "json",
+                    readOnly: true,
+                    defaultValue: output,
+                },
+            ],
         });
+    } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        await ctx.toast.show({color: "danger", message: `Could not convert the response: ${detail}`});
     }
-
-    await ctx.prompt.form({
-        id: "filter-convert-result",
-        title: "Converted response",
-        confirmText: "Done",
-        inputs: [
-            {
-                type: "editor",
-                name: "result",
-                label: "Result",
-                language: "json",
-                readOnly: true,
-                defaultValue: output,
-            },
-        ],
-    });
 }

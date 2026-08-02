@@ -131,6 +131,8 @@ below) — it does not abort the whole response:
 - `fixed <places>` and `div`/`mul`'s numeric argument: the exponent/places is capped at 10,000.
 - `base64`, `base64url`, `hexbytes`, and `jwt` (which decodes its segments the same way): input
   is capped at 2,000,000 characters.
+- `div`'s result is capped at 30 decimal places of precision for a non-terminating quotient
+  (e.g. `1 | div 3`), so it always terminates rather than growing without bound.
 
 ## Errors
 
