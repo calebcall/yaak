@@ -2193,7 +2193,7 @@ const STEP_FAMILIES = [
 		match: (n) => /^(hex|bin|oct|dec)>/.test(n)
 	},
 	{
-		label: "scaling (take an argument)",
+		label: "scaling",
 		match: (n) => n === "div" || n === "mul" || n === "fixed"
 	},
 	{
@@ -2209,24 +2209,54 @@ const STEP_FAMILIES = [
 		match: (n) => n === "json" || n === "jwt"
 	}
 ];
-function buildStepReference() {
+/**
+* Renders a step for the reference card with its argument placeholders
+* inline (e.g. `div <n>`), derived from the registry's own `arity` rather
+* than a hardcoded list of "which steps take an argument" -- so this stays
+* honest if a step's arity ever changes.
+*/
+function formatStepName(name) {
+	const arity = STEPS[name]?.arity ?? 0;
+	if (arity === 0) return name;
+	if (arity === 1) return `${name} <n>`;
+	return `${name} ${Array.from({ length: arity }, (_, i) => `<arg${i + 1}>`).join(" ")}`;
+}
+/**
+* The GENERATED half of the reference card -- every step in `STEPS`,
+* grouped by family, with no hand-written text. Exported separately (rather
+* than folded straight into the full card) so a drift-guard test can assert
+* a step name appears in *this* string specifically. Asserting against the
+* full card (generated sections + hand-written examples) would be a weaker
+* guard: `hex>dec` and `jwt` also happen to appear in the examples below, so
+* a substring check over the whole card could pass even if the generator
+* silently dropped them from the generated sections.
+*/
+function buildStepFamilySections() {
 	const remaining = new Set(Object.keys(STEPS));
 	const lines = [];
 	for (const { label, match } of STEP_FAMILIES) {
-		const members = Array.from(remaining).filter(match).sort();
-		if (members.length === 0) continue;
-		members.forEach((n) => remaining.delete(n));
-		lines.push(`- **${label}**: ${members.join(", ")}`);
+		const names = Array.from(remaining).filter(match).sort();
+		if (names.length === 0) continue;
+		names.forEach((n) => remaining.delete(n));
+		lines.push(`- **${label}**: ${names.map(formatStepName).join(", ")}`);
 	}
-	if (remaining.size > 0) lines.push(`- **other**: ${Array.from(remaining).sort().join(", ")}`);
+	if (remaining.size > 0) {
+		const leftover = Array.from(remaining).sort();
+		lines.push(`- **other**: ${leftover.map(formatStepName).join(", ")}`);
+	}
+	return lines.join("\n");
+}
+const STEP_FAMILY_SECTIONS = buildStepFamilySections();
+function buildStepReference() {
 	return [
 		"One rule per line: `$.path | step | step`",
 		"",
-		...lines,
+		STEP_FAMILY_SECTIONS,
 		"",
 		"Examples:",
 		"- `$.result | hex>dec`",
 		"- `$..value | hex>dec | div 1e18`",
+		"- `$.payload | base64 | json`",
 		"- `$.token | jwt`"
 	].join("\n");
 }

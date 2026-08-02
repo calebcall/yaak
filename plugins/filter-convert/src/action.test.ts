@@ -1,6 +1,6 @@
 import type {Context, HttpRequest} from "@yaakapp/api";
 import {describe, expect, it} from "vitest";
-import {convertResponse} from "./action";
+import {buildStepFamilySections, convertResponse} from "./action";
 import {STEPS} from "./steps";
 
 const REQUEST = {id: "rq_1", name: "block", url: "https://x"} as HttpRequest;
@@ -119,9 +119,42 @@ describe("convertResponse", () => {
         const first = h.calls.formInputs[0] as Array<{type?: string; content?: string}>;
         const reference = first.find((i) => i.type === "markdown");
         expect(reference?.content).toBeTruthy();
+        // The card embeds the generated family sections verbatim.
+        expect(reference!.content).toContain(buildStepFamilySections());
+    });
+
+    it("lists every registered step in the GENERATED family sections specifically", () => {
+        // Asserting against the whole card (as the previous version of this
+        // guard did) is a weaker check than it looks: `hex>dec` and `jwt`
+        // also appear in the hand-written Examples block below the
+        // generated sections, so a substring search over the full card
+        // could pass by accident for exactly those two names even if the
+        // generator itself dropped them. Asserting against
+        // `buildStepFamilySections()` directly -- which contains no
+        // hand-written text at all -- closes that blind spot.
+        const sections = buildStepFamilySections();
         for (const name of Object.keys(STEPS)) {
-            expect(reference!.content).toContain(name);
+            expect(sections).toContain(name);
         }
+    });
+
+    it("shows the argument form for steps that take one, derived from arity", () => {
+        const sections = buildStepFamilySections();
+        expect(sections).toContain("div <n>");
+        expect(sections).toContain("mul <n>");
+        expect(sections).toContain("fixed <n>");
+        // Zero-arity steps stay bare, not `hex>dec <n>`.
+        expect(sections).toContain("hex>dec");
+        expect(sections).not.toContain("hex>dec <n>");
+    });
+
+    it("shows worked examples covering the encoding and structured families", async () => {
+        const h = harness();
+        await convertResponse(h.ctx, REQUEST, h.deps);
+        const first = h.calls.formInputs[0] as Array<{type?: string; content?: string}>;
+        const reference = first.find((i) => i.type === "markdown");
+        expect(reference?.content).toMatch(/base64.*\|.*json/);
+        expect(reference?.content).toMatch(/jwt/);
     });
 
     it("offers the rules editor with JSON-free plain text and a gutter", async () => {
