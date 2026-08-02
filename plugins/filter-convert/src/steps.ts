@@ -70,6 +70,78 @@ function formatRadix(n: bigint, radix: number, prefix: string): string {
     return `${sign}${prefix}${abs.toString(radix)}`;
 }
 
+/** ISO 8601 in UTC, omitting the milliseconds component when it is zero. */
+function isoFromMs(ms: bigint): string {
+    const asNumber = Number(ms);
+    if (!Number.isSafeInteger(asNumber)) throw new StepError(`timestamp out of range: ${ms}`);
+    const date = new Date(asNumber);
+    // Date only represents +-8.64e15ms; a value can be a safe JS number
+    // (up to ~9.007e15) and still fall outside that window, in which case
+    // the Date is invalid and getTime() is NaN.
+    if (Number.isNaN(date.getTime())) throw new StepError(`timestamp out of range: ${ms}`);
+    const iso = date.toISOString();
+    return iso.endsWith(".000Z") ? `${iso.slice(0, -5)}Z` : iso;
+}
+
+/** Strict ISO 8601 UTC instant: "YYYY-MM-DDTHH:mm:ss(.sss)Z". Only this exact
+ * shape (the one produced by epoch_s>date / epoch_ms>date) is accepted, so
+ * date>epoch_s / date>epoch_ms never have to guess at a partial or offset
+ * date's meaning. */
+const ISO_INSTANT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{3}))?Z$/;
+
+function daysInMonth(year: number, month: number): number {
+    if (month === 2) {
+        const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+        return leap ? 29 : 28;
+    }
+    return [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1] as number;
+}
+
+/** Parse a strict ISO instant string to milliseconds since the epoch.
+ *
+ * Date.parse/Date.UTC are lenient and silently roll invalid calendar dates
+ * over into a different, valid one (e.g. "2025-02-30" becomes 2025-03-02),
+ * which would produce a wrong-but-plausible epoch instead of an error. Every
+ * field is range-checked by hand before Date.UTC ever sees it, so overflow
+ * can't happen. */
+function msFromDate(value: unknown): bigint {
+    if (typeof value !== "string") throw new StepError(`not a date string: ${String(value)}`);
+    const match = ISO_INSTANT.exec(value.trim());
+    if (match == null) throw new StepError(`not an ISO 8601 instant: ${value}`);
+    // Groups 1-6 are always present when the regex matches; only the
+    // fractional-seconds group (7) is optional.
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const hour = Number(match[4]);
+    const minute = Number(match[5]);
+    const second = Number(match[6]);
+    const ms = match[7] == null ? 0 : Number(match[7]);
+    if (month < 1 || month > 12) throw new StepError(`invalid month: ${value}`);
+    if (day < 1 || day > daysInMonth(year, month)) throw new StepError(`invalid day: ${value}`);
+    if (hour > 23 || minute > 59 || second > 59) throw new StepError(`invalid time: ${value}`);
+    return BigInt(Date.UTC(year, month - 1, day, hour, minute, second, ms));
+}
+
+/** BigInt division that rounds toward negative infinity (floor), not toward
+ * zero. `date>epoch_s` truncates sub-second precision by design, so it must
+ * floor: for a negative instant like -500ms (1969-12-31T23:59:59.500Z),
+ * truncating division gives 0 (1970-01-01T00:00:00 — the wrong second
+ * entirely), while flooring gives -1 (1969-12-31T23:59:59 — the second the
+ * instant actually falls in). `divisor` is always the positive 1000n here. */
+function floorDivBigInt(dividend: bigint, divisor: bigint): bigint {
+    const quotient = dividend / divisor;
+    const remainder = dividend % divisor;
+    return remainder !== 0n && (remainder < 0n) !== (divisor < 0n) ? quotient - 1n : quotient;
+}
+
+const DURATION_UNITS: Array<[label: string, ms: bigint]> = [
+    ["d", 86_400_000n],
+    ["h", 3_600_000n],
+    ["m", 60_000n],
+    ["s", 1000n],
+];
+
 export const STEPS: Record<string, Step> = {
     // ---- numeric base ----
     "hex>dec": {arity: 0, run: (v) => parseRadix(v, 16, "0x", /^[0-9a-f]+$/)},
@@ -109,6 +181,29 @@ export const STEPS: Record<string, Step> = {
                 throw new StepError(`fixed places too large (max ${MAX_PLACES}): ${raw}`);
             }
             return formatFixed(roundDec(parseDec(v), places), places);
+        },
+    },
+
+    // ---- time ----
+    "epoch_s>date": {arity: 0, run: (v) => isoFromMs(toInteger(v) * 1000n)},
+    "epoch_ms>date": {arity: 0, run: (v) => isoFromMs(toInteger(v))},
+    "date>epoch_s": {arity: 0, run: (v) => floorDivBigInt(msFromDate(v), 1000n)},
+    "date>epoch_ms": {arity: 0, run: (v) => msFromDate(v)},
+    "ms>duration": {
+        arity: 0,
+        run: (v) => {
+            let remaining = toInteger(v);
+            if (remaining < 0n) throw new StepError(`negative duration: ${remaining}`);
+            const parts: string[] = [];
+            for (const [label, size] of DURATION_UNITS) {
+                const count = remaining / size;
+                if (count > 0n) {
+                    parts.push(`${count}${label}`);
+                    remaining %= size;
+                }
+            }
+            if (remaining > 0n || parts.length === 0) parts.push(`${remaining}ms`);
+            return parts.join(" ");
         },
     },
 };

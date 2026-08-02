@@ -197,6 +197,83 @@ describe("scaling", () => {
     });
 });
 
+describe("time", () => {
+    it("converts epoch seconds to ISO without a milliseconds part", () => {
+        expect(runStep("epoch_s>date", 1738705728n, [])).toBe("2025-02-04T21:48:48Z");
+    });
+
+    it("includes milliseconds only when non-zero", () => {
+        expect(runStep("epoch_ms>date", 1738705728000n, [])).toBe("2025-02-04T21:48:48Z");
+        expect(runStep("epoch_ms>date", 1738705728123n, [])).toBe("2025-02-04T21:48:48.123Z");
+    });
+
+    it("converts ISO back to epoch", () => {
+        expect(runStep("date>epoch_s", "2025-02-04T21:48:48Z", [])).toBe(1738705728n);
+        expect(runStep("date>epoch_ms", "2025-02-04T21:48:48.123Z", [])).toBe(1738705728123n);
+    });
+
+    it("formats durations largest unit first, skipping zeroes", () => {
+        expect(runStep("ms>duration", 3661000n, [])).toBe("1h 1m 1s");
+        expect(runStep("ms>duration", 500n, [])).toBe("500ms");
+        expect(runStep("ms>duration", 90061000n, [])).toBe("1d 1h 1m 1s");
+        expect(runStep("ms>duration", 0n, [])).toBe("0ms");
+    });
+
+    it("rejects an unparseable date", () => {
+        expect(() => runStep("date>epoch_s", "not a date", [])).toThrow();
+    });
+
+    it("rejects an out-of-range epoch", () => {
+        expect(() => runStep("epoch_s>date", 10n ** 18n, [])).toThrow();
+    });
+
+    it("rejects a safe-integer epoch_ms that still exceeds Date's own range", () => {
+        // Date only accepts values within +-8.64e15ms; 9e15 is a safe JS
+        // number but falls outside that window, so this exercises the
+        // getTime()-is-NaN guard rather than the Number.isSafeInteger guard.
+        expect(() => runStep("epoch_ms>date", 9_000_000_000_000_000n, [])).toThrow();
+    });
+
+    it("floors, rather than truncates, a sub-second pre-1970 instant to epoch seconds", () => {
+        // -500ms is the 1969-12-31T23:59:59 second (which spans -1000..-1ms).
+        // Truncating division toward zero would give 0 (1970-01-01T00:00:00),
+        // which is the wrong second entirely; flooring gives -1, the correct one.
+        expect(runStep("date>epoch_s", "1969-12-31T23:59:59.500Z", [])).toBe(-1n);
+    });
+
+    it("round-trips a whole-second pre-1970 instant", () => {
+        expect(runStep("date>epoch_s", "1969-12-31T23:59:59Z", [])).toBe(-1n);
+    });
+
+    it("rejects a calendar date that Date.parse would silently roll over", () => {
+        // Date.parse("2025-02-30") normalizes to 2025-03-02 instead of
+        // rejecting the invalid day; that would silently produce a wrong
+        // epoch, so date>epoch_s must reject it outright.
+        expect(() => runStep("date>epoch_s", "2025-02-30T00:00:00Z", [])).toThrow();
+    });
+
+    it("rejects an out-of-range month or day", () => {
+        expect(() => runStep("date>epoch_s", "2025-13-01T00:00:00Z", [])).toThrow();
+        expect(() => runStep("date>epoch_s", "2025-01-45T00:00:00Z", [])).toThrow();
+    });
+
+    it("rejects a bare, non-instant ISO date", () => {
+        // Only the full "YYYY-MM-DDTHH:mm:ss(.sss)Z" instant form produced by
+        // epoch_s>date/epoch_ms>date is accepted, keeping the round-trip
+        // lossless and unambiguous.
+        expect(() => runStep("date>epoch_s", "2025", [])).toThrow();
+        expect(() => runStep("date>epoch_s", "2025-02-04", [])).toThrow();
+    });
+
+    it("rejects a negative duration", () => {
+        expect(() => runStep("ms>duration", -1n, [])).toThrow();
+    });
+
+    it("formats a duration spanning many days", () => {
+        expect(runStep("ms>duration", 8_640_003_661_000n, [])).toBe("100000d 1h 1m 1s");
+    });
+});
+
 describe("registry", () => {
     it("rejects an unknown step", () => {
         expect(() => runStep("nope", "x", [])).toThrow(/unknown step/i);
