@@ -2128,6 +2128,25 @@ const TOKEN_LABELS = {
 	urlenc: "URL-encoded"
 };
 /**
+* Overrides the DISPLAYED label for a handful of internal type ids whose
+* plain name reads as ambiguous next to a similarly-worded sibling --
+* `hex` (a base-16 *number*) sitting beside `hex bytes` (a hex-encoded
+* *byte string* that decodes to text) is the motivating case (#19 review):
+* a user who has never read the README could easily pick the wrong one and
+* get a nonsensical result. This is a display-only layer: `CONVERSION_EDGES`,
+* `toOptionsFor`'s filtering, `FormInputSelectOption.value`, and everything
+* persisted to the store all keep using the plain id (`"hex"`, `"hex
+* bytes"`, ...) below -- only the text shown in the dropdown changes, so
+* this never invalidates a previously-saved selection.
+*/
+const DISPLAY_LABEL_OVERRIDES = {
+	hex: "hex number",
+	"hex bytes": "hex bytes (text)"
+};
+function displayLabel(id) {
+	return DISPLAY_LABEL_OVERRIDES[id] ?? id;
+}
+/**
 * Derives every from->to conversion edge straight from `STEPS`'s own keys,
 * so the Simple-mode form can never silently drop a step as the registry
 * grows: a step this module doesn't know how to label throws immediately at
@@ -2176,7 +2195,9 @@ function deriveEdges() {
 }
 /** Every from->to conversion edge, derived from the registry -- never hand-maintained. */
 const CONVERSION_EDGES = deriveEdges();
-/** From options for the Simple-mode select, in registry-discovery order, deduplicated. */
+/** From options for the Simple-mode select, in registry-discovery order,
+* deduplicated. `value` is the stable internal id (also what's persisted to
+* the store); `label` is the possibly-overridden display text. */
 const FROM_OPTIONS = (() => {
 	const seen = /* @__PURE__ */ new Set();
 	const options = [];
@@ -2184,18 +2205,19 @@ const FROM_OPTIONS = (() => {
 		if (seen.has(edge.from)) continue;
 		seen.add(edge.from);
 		options.push({
-			label: edge.from,
+			label: displayLabel(edge.from),
 			value: edge.from
 		});
 	}
 	return options;
 })();
-/** To options for a given From label. The option's `value` is the step name
+/** To options for a given From id. The option's `value` is the step name
 * itself, so picking a To option fully determines which step to run --
-* there is no separate from+to -> step lookup to keep in sync. */
+* there is no separate from+to -> step lookup to keep in sync. `label` is
+* the possibly-overridden display text for the To id. */
 function toOptionsFor(from) {
 	return CONVERSION_EDGES.filter((e) => e.from === from).map((e) => ({
-		label: e.to,
+		label: displayLabel(e.to),
 		value: e.step
 	}));
 }

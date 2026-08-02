@@ -17,9 +17,13 @@ most recent response body, and shows the converted JSON in a read-only result di
 3. Pick a **Mode**:
    - **Simple** (default) — fill in **Field** (a JSONPath, defaulting to `$.result`), then pick
      **From** and **To** representations. **To** is filtered to whatever the registry actually
-     supports converting the chosen **From** into. Optionally set **Then** to `divide by`,
-     `multiply by`, or `round to N places` and fill in **Amount** — this covers everything a
-     single from→to conversion (plus one scaling step) can express, with no syntax to type.
+     supports converting the chosen **From** into. `hex number` (a base-16 number, e.g.
+     `"0x1879687"` → `25663111`) and `hex bytes (text)` (a hex-encoded byte string that decodes to
+     text, e.g. `"0x68656c6c6f"` → `"hello"`) are listed separately and labelled by what they
+     actually are, so picking between them doesn't depend on having read this README. Optionally
+     set **Then** to `divide by`, `multiply by`, or `round to N places` and fill in **Amount** —
+     this covers everything a single from→to conversion (plus one scaling step) can express, with
+     no syntax to type.
    - **Advanced** — the rules DSL described below, for chaining multiple steps or applying
      several rules at once.
 4. Click **Convert**. A second dialog opens with the converted response as read-only JSON.

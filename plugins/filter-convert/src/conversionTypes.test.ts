@@ -50,7 +50,43 @@ describe("conversionTypes", () => {
         const decimalTargets = toOptionsFor("decimal")
             .map((o) => o.label)
             .sort();
-        expect(decimalTargets).toEqual(["binary", "hex", "octal"]);
+        // "hex" is displayed as "hex number" here -- see the disambiguation
+        // tests below -- even though the underlying id/value stays "hex".
+        expect(decimalTargets).toEqual(["binary", "hex number", "octal"]);
+    });
+
+    // #19 review: "hex" (a base-16 number) and "hex bytes" (a hex-encoded
+    // byte string that decodes to text) sit next to each other in the
+    // dropdown and are easy to confuse without having read the README. The
+    // displayed label must disambiguate them; the underlying id/value (used
+    // for filtering and persisted to the store) must not change.
+    describe("ambiguous label disambiguation (#19)", () => {
+        it("labels the numeric hex type distinctly from hex-encoded bytes", () => {
+            const hexOption = FROM_OPTIONS.find((o) => o.value === "hex");
+            const hexBytesOption = FROM_OPTIONS.find((o) => o.value === "hex bytes");
+            expect(hexOption?.label).toBe("hex number");
+            expect(hexBytesOption?.label).toBe("hex bytes (text)");
+            expect(hexOption?.label).not.toBe(hexBytesOption?.label);
+        });
+
+        it("keeps the internal id/value for hex and hex bytes unchanged", () => {
+            expect(FROM_OPTIONS.map((o) => o.value)).toContain("hex");
+            expect(FROM_OPTIONS.map((o) => o.value)).toContain("hex bytes");
+            expect(toOptionsFor("hex")).toEqual([{label: "decimal", value: "hex>dec"}]);
+            expect(toOptionsFor("hex bytes")).toEqual([{label: "text", value: "hexbytes"}]);
+        });
+
+        it("also disambiguates hex bytes when it appears as a To option", () => {
+            const toHexBytes = toOptionsFor("text").find((o) => o.value === "text>hexbytes");
+            expect(toHexBytes?.label).toBe("hex bytes (text)");
+        });
+
+        it("reads unambiguously for `text` used as both a From and a To id", () => {
+            const textAsFrom = FROM_OPTIONS.find((o) => o.value === "text");
+            const textAsTo = toOptionsFor("hex bytes").find((o) => o.value === "hexbytes");
+            expect(textAsFrom?.label).toBe("text");
+            expect(textAsTo?.label).toBe("text");
+        });
     });
 
     it("offers every step's To option under its From", () => {
