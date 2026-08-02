@@ -1,4 +1,5 @@
 import {StepError} from "./errors";
+import {divDec, formatDec, formatFixed, mulDec, parseDec, roundDec} from "./decimal";
 
 export type Step = {
     arity: number;
@@ -73,6 +74,32 @@ export const STEPS: Record<string, Step> = {
     "dec>hex": {arity: 0, run: (v) => formatRadix(toInteger(v), 16, "0x")},
     "dec>bin": {arity: 0, run: (v) => formatRadix(toInteger(v), 2, "0b")},
     "dec>oct": {arity: 0, run: (v) => formatRadix(toInteger(v), 8, "0o")},
+
+    // ---- scaling; all results are strings to preserve exactness ----
+    div: {
+        arity: 1,
+        run: (v, [n]) => formatDec(divDec(parseDec(v), parseDec(n))),
+    },
+    mul: {
+        arity: 1,
+        run: (v, [n]) => formatDec(mulDec(parseDec(v), parseDec(n))),
+    },
+    fixed: {
+        arity: 1,
+        run: (v, [n]) => {
+            // Number.parseInt("2.5", 10) === 2, so parsing with it alone would
+            // silently truncate a fractional argument instead of rejecting it.
+            // Requiring the raw argument to be all digits catches that, along
+            // with negatives (rejected by the sign character) and a missing
+            // argument (n is undefined, so String(n) is "undefined").
+            const raw = String(n).trim();
+            if (!/^\d+$/.test(raw)) {
+                throw new StepError(`fixed requires a non-negative integer, got: ${String(n)}`);
+            }
+            const places = Number.parseInt(raw, 10);
+            return formatFixed(roundDec(parseDec(v), places), places);
+        },
+    },
 };
 
 export function runStep(name: string, value: unknown, args: string[]): unknown {

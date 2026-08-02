@@ -116,6 +116,69 @@ describe("toInteger safety", () => {
     });
 });
 
+describe("scaling", () => {
+    it("divides wei to ether", () => {
+        expect(runStep("div", 10n ** 18n, ["1e18"])).toBe("1");
+    });
+
+    it("divides a 256-bit balance without precision loss", () => {
+        expect(runStep("div", 1234567890123456789012n, ["1e18"]))
+            .toBe("1234.567890123456789012");
+    });
+
+    it("divides cents to dollars", () => {
+        expect(runStep("div", 1999n, ["100"])).toBe("19.99");
+    });
+
+    it("multiplies", () => {
+        expect(runStep("mul", "1.5", ["100"])).toBe("150");
+    });
+
+    it("fixes decimal places, padding as needed", () => {
+        expect(runStep("fixed", "1.5", ["4"])).toBe("1.5000");
+    });
+
+    it("rejects a non-numeric argument", () => {
+        expect(() => runStep("div", 10n, ["abc"])).toThrow();
+    });
+
+    it("rejects division by zero", () => {
+        expect(() => runStep("div", 10n, ["0"])).toThrow();
+    });
+
+    it("divides a negative dividend, placing the sign correctly", () => {
+        expect(runStep("div", -100n, ["4"])).toBe("-25");
+    });
+
+    it("multiplies a negative value, placing the sign correctly", () => {
+        expect(runStep("mul", "-1.5", ["100"])).toBe("-150");
+    });
+
+    it("fixes a negative value, placing the sign correctly", () => {
+        expect(runStep("fixed", "-1.5", ["4"])).toBe("-1.5000");
+    });
+
+    it("rejects a non-numeric multiplier argument", () => {
+        expect(() => runStep("mul", "10", ["abc"])).toThrow();
+    });
+
+    it("rejects a non-numeric value for mul", () => {
+        expect(() => runStep("mul", "abc", ["10"])).toThrow();
+    });
+
+    it("rejects a negative places argument for fixed", () => {
+        expect(() => runStep("fixed", "1.5", ["-1"])).toThrow();
+    });
+
+    it("rejects a non-integer places argument for fixed", () => {
+        expect(() => runStep("fixed", "1.5", ["2.5"])).toThrow();
+    });
+
+    it("rejects a missing places argument for fixed", () => {
+        expect(() => runStep("fixed", "1.5", [])).toThrow();
+    });
+});
+
 describe("registry", () => {
     it("rejects an unknown step", () => {
         expect(() => runStep("nope", "x", [])).toThrow(/unknown step/i);
