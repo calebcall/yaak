@@ -19,7 +19,7 @@
     "@types/node": "^24.13.3",
     "@yaakapp/cli": "^0.7.1",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "dependencies": {
     "@yaakapp/api": "^0.8.3"
